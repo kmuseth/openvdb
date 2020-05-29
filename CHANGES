@@ -4,8 +4,7 @@ OpenVDB Version History
 Version 7.1.0 - In Development
 
     New features:
-    - Parallel fast sweeping to extend, re-build and mask signed distance 
-      and scalar fields.
+    - Parallel fast sweeping to extend, re-build and mask signed distance and scalar fields.
     - Added Grid::isTreeUnique() to tell if the tree is shared with another
       grid.
     - Added PointDataLeafNode::stealAttributeSet() and
