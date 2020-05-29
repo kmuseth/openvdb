@@ -514,8 +514,8 @@ TestFastSweeping::velocityExtensionOfFogSphere()
   const float radius = 100.0f;
   const Vec3f center(0.0f, 0.0f, 0.0f);
   const float voxelSize = 1.0f, width = 3.0f;//half width
-  const float inside = -std::numeric_limits<float>::min();
-  const float outside = std::numeric_limits<float>::max();
+  //const float inside = -std::numeric_limits<float>::min();
+  //const float outside = std::numeric_limits<float>::max();
   FloatGrid::Ptr grid = tools::createLevelSetSphere<FloatGrid>(radius, center, voxelSize, float(width));
   tools::sdfToFogVolume(*grid);
   writeFile("/tmp/sphere1_fog_in.vdb", grid);
@@ -545,8 +545,8 @@ TestFastSweeping::velocityExtensionOfSdfSphere()
   const float radius = 100.0f;
   const Vec3f center(0.0f, 0.0f, 0.0f);
   const float voxelSize = 1.0f, width = 10.0f;//half width
-  const float inside = -std::numeric_limits<float>::min();
-  const float outside = std::numeric_limits<float>::max();
+  //const float inside = -std::numeric_limits<float>::min();
+  //const float outside = std::numeric_limits<float>::max();
   FloatGrid::Ptr grid = tools::createLevelSetSphere<FloatGrid>(radius, center, voxelSize, float(width));
   writeFile("/tmp/sphere2_sdf_in.vdb", grid);
 

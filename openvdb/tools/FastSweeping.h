@@ -1062,8 +1062,8 @@ struct FastSweeping<GridT>::SweepingKernel
         timer.restart("Alternative init");
 #endif
         auto tmp = std::make_unique<uint32_t[]>(mParent->mPagedArray.size());
-        tbb::parallel_for(tbb::blocked_range<uint32_t>(0, mParent->mPagedArray.size(), 64),
-                          [&](const tbb::blocked_range<uint32_t>& r){auto *p=&tmp[r.begin()]; for (uint32_t i = r.begin(); i < r.end(); ++i) *p++=i;});
+        tbb::parallel_for(tbb::blocked_range<size_t>(0, mParent->mPagedArray.size(), 64),
+                          [&](const tbb::blocked_range<size_t>& r){auto *p=&tmp[r.begin()]; for (size_t i = r.begin(); i < r.end(); ++i) *p++=i;});
         if (tmp[134] != 134) std::cerr << "ERROR" << std::endl;
         auto hashComp2 = [&](uint32_t &a, uint32_t &b){return hash(coords[a]) < hash(coords[b]);};
 #ifdef BENCHMARK_FAST_SWEEPING
