@@ -74,6 +74,7 @@ set(UNITTEST_SOURCE_FILES
   TestDivergence.cc
   TestDoubleMetadata.cc
   TestExceptions.cc
+  TestFastSweeping.cc
   TestFile.cc
   TestFindActiveValues.cc
   TestFloatMetadata.cc

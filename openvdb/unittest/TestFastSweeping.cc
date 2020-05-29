@@ -1,31 +1,12 @@
-///////////////////////////////////////////////////////////////////////////
+// Copyright Contributors to the OpenVDB Project
+// SPDX-License-Identifier: MPL-2.0
 //
-// Copyright (c) Ken Museth
-//
-// All rights reserved. This software is distributed under the
-// Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
-//
-// Redistributions of source code must retain the above copyright
-// and license notice and the following restrictions and disclaimer.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-// IN NO EVENT SHALL THE COPYRIGHT HOLDERS' AND CONTRIBUTORS' AGGREGATE
-// LIABILITY FOR ALL CLAIMS REGARDLESS OF THEIR BASIS EXCEED US$250.00.
-//
-///////////////////////////////////////////////////////////////////////////
+/// @file    TestFastSweeping.cc
+///
+/// @author  Ken Museth
 
 //#define BENCHMARK_FAST_SWEEPING
-#define TIMING_FAST_SWEEPING
+//#define TIMING_FAST_SWEEPING
 
 #include <sstream>
 #include <cppunit/extensions/HelperMacros.h>
@@ -44,7 +25,7 @@
 #endif
 
 // Uncomment to test on models from our web-site
-#define TestFastSweeping_DATA_PATH "/Users/ken/dev/data/vdb/"
+//#define TestFastSweeping_DATA_PATH "/Users/ken/dev/data/vdb/"
 //#define TestFastSweeping_DATA_PATH "/home/kmu/data/vdb/"
 //#define TestFastSweeping_DATA_PATH "/usr/pic1/Data/OpenVDB/LevelSetModels/"
 
@@ -369,8 +350,8 @@ TestFastSweeping::testFogToSdf()
 #endif
     fs.initSdf(*grid, /*isoValue*/0.5f,/*isInputSdf*/false);
     CPPUNIT_ASSERT(fs.voxelCount() > 0);
-    std::cerr << "voxel count = " << fs.voxelCount() << std::endl;
-    std::cerr << "boundary count = " << fs.boundaryCount() << std::endl;
+    //std::cerr << "voxel count = " << fs.voxelCount() << std::endl;
+    //std::cerr << "boundary count = " << fs.boundaryCount() << std::endl;
     fs.sweep();
     auto grid2 = fs.sdfGrid();
 #ifdef TIMING_FAST_SWEEPING
@@ -387,11 +368,11 @@ TestFastSweeping::testFogToSdf()
                                                    true,// check active voxels
                                                    false,// ignore active tiles since a level set has none
                                                    false);// no need to check the background value
-        std::cerr << message << std::endl;
+        //std::cerr << message << std::endl;
         const double percent = 100.0*double(diagnose.failureCount())/double(grid2->activeVoxelCount());
-        std::cerr << "Failures = " << percent << "%" << std::endl;
-        std::cerr << "Failure count = " << diagnose.failureCount() << std::endl;
-        std::cerr << "Total active voxel count = " << grid2->activeVoxelCount() << std::endl;
+        //std::cerr << "Failures = " << percent << "%" << std::endl;
+        //std::cerr << "Failure count = " << diagnose.failureCount() << std::endl;
+        //std::cerr << "Total active voxel count = " << grid2->activeVoxelCount() << std::endl;
         CPPUNIT_ASSERT(percent < 3.0);
     }
 }// testFogToSdf
@@ -581,6 +562,7 @@ TestFastSweeping::velocityExtensionOfSdfSphere()
 void
 TestFastSweeping::velocityExtensionOfFogBunny()
 {
+#ifdef TestFastSweeping_DATA_PATH
   using namespace openvdb;
   auto writeFile = [](std::string name, FloatGrid::Ptr grid){
     io::File file(name);
@@ -610,11 +592,13 @@ TestFastSweeping::velocityExtensionOfFogBunny()
   writeFile("/tmp/bunny1_sdf_out.vdb", grids[0]);
   writeFile("/tmp/bunny1_ext_out.vdb", grids[1]);
   std::cerr << "after writing" << std::endl;
+#endif
 }//velocityExtensionOfFogBunnyevalActiveVoxelBoundingBox
 
 void
 TestFastSweeping::velocityExtensionOfSdfBunny()
 {
+#ifdef TestFastSweeping_DATA_PATH
   using namespace openvdb;
   auto writeFile = [](std::string name, FloatGrid::Ptr grid){
     io::File file(name);
@@ -643,6 +627,7 @@ TestFastSweeping::velocityExtensionOfSdfBunny()
   writeFile("/tmp/bunny2_sdf_out.vdb", grids[0]);
   writeFile("/tmp/bunny2_ext_out.vdb", grids[1]);
   std::cerr << "after writing" << std::endl;
+#endif
 }//velocityExtensionOfFogBunnyevalActiveVoxelBoundingBox
 
 // Copyright (c) Ken Museth

@@ -7,13 +7,13 @@
 ///
 /// @brief   Defined the six functions {fog,sdf}To{Sdf,Ext,SdfAndExt} in
 ///          addition to the two functions maskSdf and dilateSdf. Sdf denotes
-///          a signed-distance field (i.e. negative values are insdie), fog 
+///          a signed-distance field (i.e. negative values are insdie), fog
 ///          is a scalar fog volume (i.e. higher values are inside), and Ext is
-///          a field (currently limited to a scalar) that is extended off the 
+///          a field (currently limited to a scalar) that is extended off the
 ///          iso-surface. All these functions are implemented by the methods of
 ///          the class dubbed FastSweeping.
 ///
-/// @todo    1) Sort uint32 offsets instead of array of Coord 
+/// @todo    1) Sort uint32 offsets instead of array of Coord
 ///          2) Concurrent bi-directional sweeping
 ///          3) Rebuild narrow-band level set
 ///          4) Allow for the grid types of the sdf and ext to be different
@@ -32,7 +32,7 @@
 #ifndef OPENVDB_TOOLS_FASTSWEEPING_HAS_BEEN_INCLUDED
 #define OPENVDB_TOOLS_FASTSWEEPING_HAS_BEEN_INCLUDED
 
-#define BENCHMARK_FAST_SWEEPING
+//#define BENCHMARK_FAST_SWEEPING
 
 #include <type_traits>// for static_assert
 #include <cmath>
@@ -53,9 +53,9 @@
 #include "Morphology.h"
 
 #include "Statistics.h"
-//#ifdef BENCHMARK_FAST_SWEEPING
+#ifdef BENCHMARK_FAST_SWEEPING
 #include <openvdb/util/CpuTimer.h>
-//#endif
+#endif
 
 #include <openvdb/math/Stats.h>
 
@@ -64,14 +64,14 @@ OPENVDB_USE_VERSION_NAMESPACE
 namespace OPENVDB_VERSION_NAME {
 namespace tools {
 
-/// @brief Converts a scalar fog volume into a signed distance function. Active input voxels 
+/// @brief Converts a scalar fog volume into a signed distance function. Active input voxels
 ///        with scalar values above the given isoValue will have NEGATIVE distance
 ///        values on output, i.e. they are assumed to be INSIDE the iso-surface.
 ///
-/// @return A signed distance field to an the iso-surface, defined on its
-///         active voxels only.
+/// @return A shared pointer to a signed-distance field defined on the active values
+///         of the input fog volume.
 ///
-/// @param fogGrid  Scalar (floating-point) volume from which an 
+/// @param fogGrid  Scalar (floating-point) volume from which an
 ///                 iso-surface can be defined.
 ///
 /// @param isoValue A value which defines a smooth iso-surface that
@@ -88,7 +88,7 @@ namespace tools {
 ///          active tiles in the input grid will be converted to active voxels
 ///          in the output grid!
 ///
-/// @throw  RuntimeError if the iso-surface does not intersected any active 
+/// @throw  RuntimeError if the iso-surface does not intersected any active
 ///         voxels or if it intersects any active tiles in @a fogGrid.
 template<typename GridT>
 typename GridT::Ptr
@@ -97,12 +97,12 @@ fogToSdf(const GridT &fogGrid,
          int nIter = 1);
 
 /// @brief Given an existing approximate SDF it solves the Eikonal equation for all its
-///        active voxels. Active input voxels with a signed distance values above the 
-///        given isoValue will have POSITIVE distance values on output, i.e. they are 
+///        active voxels. Active input voxels with a signed distance value above the
+///        given isoValue will have POSITIVE distance values on output, i.e. they are
 ///        assumed to be OUTSIDE the iso-surface.
 ///
-/// @return A signed distance field to an the iso-surface, defined on its
-///         active voxels only.
+/// @return A shared pointer to a signed-distance field defined on the active values
+///         of the input sdf volume.
 ///
 /// @param sdfGrid  An approximate signed distance field to the specified iso-surface.
 ///
@@ -119,17 +119,43 @@ fogToSdf(const GridT &fogGrid,
 ///          active tiles in the input grid will be converted to active voxels
 ///          in the output grid!
 ///
-/// @throw  RuntimeError if the iso-surface does not intersected any active 
+/// @throw  RuntimeError if the iso-surface does not intersected any active
 ///         voxels or if it intersects any active tiles in @a sdfGrid.
-/// @details Topology is unchanged.
 template<typename GridT>
 typename GridT::Ptr
 sdfToSdf(const GridT &sdfGrid,
          typename GridT::ValueType isoValue = 0,
          int nIter = 1);
 
-/// @brief Converts a scalar fog into a signe distance field AND returns an
-///        extension field of the properties evauated in the specified functor.
+/// @brief Computes the extension of a scalar field, defined by the specified functor,
+///        off an iso-surface from an input FOG volume.
+///
+/// @return A shared pointer to the extension field defined from the active values in
+///         the input fog volume.
+///
+/// @param fogGrid  Scalar (floating-point) volume from which an
+///                 iso-surface can be defined.
+///
+/// @param op       Functor with signature [](const Vec3R &xyz)->float that
+///                 defines the Dirichlet boundary condition, on the iso-surface,
+///                 of the field to be extended.
+///
+/// @param isoValue A value which defines a smooth iso-surface that
+///                 intersects active voxels in @a fogGrid.
+///
+/// @param nIter    Number of iterations of the fast sweeping algorithm.
+///                 each performing 2^3 = 8 sweeps.
+///
+/// @note Strictly speaking a fog volume is normalized to the range [0,1] but this
+///       method accepts a scalar volume with an arbitary range, as long as the it
+///       includes the @a isoValue.
+///
+/// @details Topology of output grid is identical to that of the input grid, except
+///          active tiles in the input grid will be converted to active voxels
+///          in the output grid!
+///
+/// @throw  RuntimeError if the iso-surface does not intersected any active
+///         voxels or if it intersects any active tiles in @a fogGrid.
 template<typename GridT, typename OpT>
 typename GridT::Ptr
 fogToExt(const GridT &fogGrid,
@@ -137,6 +163,33 @@ fogToExt(const GridT &fogGrid,
          typename GridT::ValueType isoValue,
          int nIter = 1);
 
+/// @brief Computes the extension of a scalar field, defined by the specified functor,
+///        off an iso-surface from an input SDF volume.
+///
+/// @return A shared pointer to the extension field defined on the active values in the
+///         input signed distance field.
+///
+/// @param sdfGrid  An approximate signed distance field to the specified iso-surface.
+///
+/// @param op       Functor with signature [](const Vec3R &xyz)->float that
+///                 defines the Dirichlet boundary condition, on the iso-surface,
+///                 of the field to be extended.
+///
+/// @param isoValue A value which defines a smooth iso-surface that
+///                 intersects active voxels in @a sdfGrid.
+///
+/// @param nIter    Number of iterations of the fast sweeping algorithm.
+///                 each performing 2^3 = 8 sweeps.
+///
+/// @note The only difference between this method and fogToEXT, defined above, is the
+///       convention of the sign of the signed distance field.
+///
+/// @details Topology of output grid is identical to that of the input grid, except
+///          active tiles in the input grid will be converted to active voxels
+///          in the output grid!
+///
+/// @throw  RuntimeError if the iso-surface does not intersected any active
+///         voxels or if it intersects any active tiles in @a sdfGrid.
 template<typename GridT, typename OpT>
 typename GridT::Ptr
 sdfToExt(const GridT &sdfGrid,
@@ -144,6 +197,34 @@ sdfToExt(const GridT &sdfGrid,
          typename GridT::ValueType isoValue = 0,
          int nIter = 1);
 
+/// @brief Computes the signed distance field and the extension of a scalar field,
+///        defined by the specified functor, off an iso-surface from an input FOG volume.
+///
+/// @return An array of two shared pointers to respectively the SDF and extension field
+///
+/// @param fogGrid  Scalar (floating-point) volume from which an
+///                 iso-surface can be defined.
+///
+/// @param op       Functor with signature [](const Vec3R &xyz)->float that
+///                 defines the Dirichlet boundary condition, on the iso-surface,
+///                 of the field to be extended.
+///
+/// @param isoValue A value which defines a smooth iso-surface that
+///                 intersects active voxels in @a fogGrid.
+///
+/// @param nIter    Number of iterations of the fast sweeping algorithm.
+///                 each performing 2^3 = 8 sweeps.
+///
+/// @note Strictly speaking a fog volume is normalized to the range [0,1] but this
+///       method accepts a scalar volume with an arbitary range, as long as the it
+///       includes the @a isoValue.
+///
+/// @details Topology of output grids are identical to that of the input grid, except
+///          active tiles in the input grid will be converted to active voxels
+///          in the output grids!
+///
+/// @throw  RuntimeError if the iso-surface does not intersected any active
+///         voxels or if it intersects any active tiles in @a fogGrid.
 template<typename GridT, typename OpT>
 std::array<typename GridT::Ptr, 2>
 fogToSdfAndExt(const GridT &fogGrid,
@@ -151,14 +232,53 @@ fogToSdfAndExt(const GridT &fogGrid,
                typename GridT::ValueType isoValue,
                int nIter = 1);
 
+/// @brief Computes the signed distance field and the extension of a scalar field,
+///        defined by the specified functor, off an iso-surface from an input SDF volume.
+///
+/// @return An array of two shared pointers to respectively the SDF and extension field
+///
+/// @param sdfGrid  Scalar (floating-point) volume from which an
+///                 iso-surface can be defined.
+///
+/// @param op       Functor with signature [](const Vec3R &xyz)->float that
+///                 defines the Dirichlet boundary condition, on the iso-surface,
+///                 of the field to be extended.
+///
+/// @param isoValue A value which defines a smooth iso-surface that
+///                 intersects active voxels in @a sdfGrid.
+///
+/// @param nIter    Number of iterations of the fast sweeping algorithm.
+///                 each performing 2^3 = 8 sweeps.
+///
+/// @note Strictly speaking a fog volume is normalized to the range [0,1] but this
+///       method accepts a scalar volume with an arbitary range, as long as the it
+///       includes the @a isoValue.
+///
+/// @details Topology of output grids are identical to that of the input grid, except
+///          active tiles in the input grid will be converted to active voxels
+///          in the output grids!
+///
+/// @throw  RuntimeError if the iso-surface does not intersected any active
+///         voxels or if it intersects any active tiles in @a fogGrid.
 template<typename GridT, typename OpT>
 std::array<typename GridT::Ptr, 2>
-sdfToSdfAndExt(const GridT &fogGrid,
+sdfToSdfAndExt(const GridT &sdfGrid,
                const OpT &op,
                typename GridT::ValueType isoValue = 0,
                int nIter = 1);
 
-/// @brief Dilates an existing SDF
+/// @brief Dilates an existing signed distance filed by a specified number of voxels
+///
+/// @return A shared pointer to the dilated signed distance field.
+///
+/// @param sdfGrid  Input signed distance field to to be dilated.
+///
+/// @param dilation Numer of voxels that the input SDF will be dilated.
+///
+/// @param nn       Stencil-pattern used for dilation
+///
+/// @param nIter    Number of iterations of the fast sweeping algorithm.
+///                 each performing 2^3 = 8 sweeps.
 ///
 /// @details Topology will change as a result of the dilation
 template<typename GridT>
@@ -168,9 +288,23 @@ dilateSdf(const GridT &sdfGrid,
           NearestNeighbors nn = NN_FACE,
           int nIter = 1);
 
-/// @brief Expand an existing SDF into a mask
+/// @brief Expand an existing signed distance fild into a mask
 ///
-/// @details Topology will likely change due to the union with the mask.
+/// @return A shared pointer to the masked signed distance field.
+///
+/// @param sdfGrid  Input signed distance field to to be dilated.
+///
+/// @param mask     Mask used to idetify the topology of the output SDF.
+///                 Note this mask is assume to overlap with the sdfGrid.
+///
+/// @param ignoreActiveTiles If false, active tiles in the mask are treated
+///                 as active voxels. Else they are ignored.
+///
+/// @param nIter    Number of iterations of the fast sweeping algorithm.
+///                 each performing 2^3 = 8 sweeps.
+///
+/// @details Topology of the output SDF is determined by the union of the active
+///          voxels (or optionally values) in @a sdfGrid and @a mask.
 template<typename GridT, typename MaskTreeT>
 typename GridT::Ptr
 maskSdf(const GridT &sdfGrid,
@@ -431,14 +565,20 @@ void FastSweeping<GridT>::sweep(int nIter, bool finalize)
     }
 
     if (finalize) {
+#ifdef BENCHMARK_FAST_SWEEPING
       util::CpuTimer timer("Computing extrema values");
+#endif
       MinMaxKernel kernel;
       auto e = kernel.run(*mGrid1);//multi-threaded
       //auto e = extrema(mGrid->beginValueOn());// 100x slower!!!!
+#ifdef BENCHMARK_FAST_SWEEPING
       std::cerr << "Min = " << e.min() << " Max = " << e.max() << std::endl;
       timer.restart("Changing asymmetric background value");
+#endif
       changeAsymmetricLevelSetBackground(mGrid1->tree(), e.max(), e.min());//multi-threaded
+#ifdef BENCHMARK_FAST_SWEEPING
       timer.stop();
+#endif
     }
 }// FastSweeping::sweep
 
@@ -953,13 +1093,17 @@ struct FastSweeping<GridT>::SweepingKernel
 
         /////
         //std::cerr << "\tVoxel count = " << mParent->mPagedArray.size() << std::endl;
+#ifdef BENCHMARK_FAST_SWEEPING
         timer.restart("Alternative init");
+#endif
         auto tmp = std::make_unique<uint32_t[]>(mParent->mPagedArray.size());
-        tbb::parallel_for(tbb::blocked_range<uint32_t>(0, mParent->mPagedArray.size(), 64), 
+        tbb::parallel_for(tbb::blocked_range<uint32_t>(0, mParent->mPagedArray.size(), 64),
                           [&](const tbb::blocked_range<uint32_t>& r){auto *p=&tmp[r.begin()]; for (uint32_t i = r.begin(); i < r.end(); ++i) *p++=i;});
         if (tmp[134] != 134) std::cerr << "ERROR" << std::endl;
         auto hashComp2 = [&](uint32_t &a, uint32_t &b){return hash(coords[a]) < hash(coords[b]);};
+#ifdef BENCHMARK_FAST_SWEEPING
         timer.restart("Alternative sort");
+#endif
         tbb::parallel_sort(&tmp[0], &tmp[0] + mParent->voxelCount(), hashComp2);
         /////
 
@@ -968,7 +1112,7 @@ struct FastSweeping<GridT>::SweepingKernel
 #endif
         auto hashComp = [&hash](const Coord &a, const Coord &b){return hash(a) < hash(b);};
         tbb::parallel_sort(coords, coords + mParent->voxelCount(), hashComp);
-        
+
 #ifdef BENCHMARK_FAST_SWEEPING
         timer.restart("Computing number of sweep planes");
 #endif
@@ -982,10 +1126,14 @@ struct FastSweeping<GridT>::SweepingKernel
           return tbb::blocked_range<size_t>(planes[i-1], planes[i], grainSize);
         };
 
- #if 0
+#if 1
+#ifdef BENCHMARK_FAST_SWEEPING
         timer.restart("Forward  sweep");
+#endif
         for (size_t i = 1; i < planes.size(); ++i) tbb::parallel_for(range(i), *this);
+#ifdef BENCHMARK_FAST_SWEEPING
         timer.restart("Backward sweeps");
+#endif
         for (size_t i = planes.size()-1; i>0; --i) tbb::parallel_for(range(i), *this);
 #else
 #ifdef BENCHMARK_FAST_SWEEPING
