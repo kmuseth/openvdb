@@ -19,6 +19,9 @@ Version 7.1.0 - In Development
     - Removed redundant null pointer checks. [Contributed by Kuba Roth]
     - Added support for vdb_view on Windows. Requires GLEW.
     - Removed support for GLFW 2.
+    - vdb_view now uses OPENVDB_LOG_FATAL when catching exceptions.
+    - vdb_view, vdb_print and vdb_render now use std::terminate() when catching
+      an unknown exception.
 
     New features:
     - Added Grid::isTreeUnique() to tell if the tree is shared with another
@@ -46,6 +49,9 @@ Version 7.1.0 - In Development
     - Fixed a bug where the requested uniform value of an AttributeArray was
       not being applied on attribute creation if the default attribute value
       was not the default value for that value type.
+    - Fixed a compiler error when using C++17 by changing std::unexpected() to
+      std::terminate().
+      [Contributed by Mark Sisson]
 
     API changes:
     - Removed a number of deprecated point methods.
@@ -102,6 +108,18 @@ Version 7.1.0 - In Development
     - Fixed a compiler warning on Apple Clang 11.0 where the AttributeArray
       move constructor was being implicitly deleted despite being marked
       default.
+    - Added an option BLOSC_USE_EXTERNAL_SOURCES to FindBlosc to include blosc
+      dependencies as interface libraries.
+    - Added a root CMake option USE_STATIC_DEPENDENCIES to force CMake to
+      only locate static libraries on UNIX. On Windows, if enabled, located
+      libraries are assumed to be static.
+    - Added support for CMAKE_MSVC_RUNTIME_LIBRARY for compilers that target
+      the MSVC ABI. Requires CMake 3.15 or greater.
+    - Fixed an issue where OPENVDB_OPENEXR_STATICLIB was not being defined and
+      OPENEXR_DLL was being defined when linking against static builds of
+      OpenEXR/IlmBase on Windows.
+    - Improved the behaviour of boost implicit linking with the
+      Boost::disable_autolinking target.
 
 
 Version 7.0.0 - December 6, 2019

@@ -1,7 +1,27 @@
 
 name: Build
 
-on: [push, pull_request]
+on:
+  push:
+    branches:
+      - '*'
+    paths:
+      - '.github/**'
+      - 'CMakeLists.txt'
+      - 'ci/**'
+      - 'cmake/**'
+      - 'openvdb/**'
+      - 'openvdb_houdini/**'
+  pull_request:
+    branches:
+      - '*'
+    paths:
+      - '.github/**'
+      - 'CMakeLists.txt'
+      - 'ci/**'
+      - 'cmake/**'
+      - 'openvdb/**'
+      - 'openvdb_houdini/**'
 
 jobs:
   testabi7:
@@ -151,7 +171,7 @@ jobs:
     - name: test
       run: ./ci/test.sh
 
-  testwindows2019:
+  testwindows2019md:
     runs-on: windows-2019
     env:
       VCPKG_DEFAULT_TRIPLET: x64-windows
@@ -162,20 +182,40 @@ jobs:
         # note: system path must be modified in a previous step to it's use
         echo "::add-path::%VCPKG_INSTALLATION_ROOT%\installed\x64-windows\bin"
         echo "::add-path::${{github.workspace}}\build\openvdb\Release"
-    - name: update_vcpkg
-      shell: bash
-      run: |
-        # temporarily update vcpkg to fix tbb port
-        cd C:\vcpkg
-        git fetch
-        git checkout 97302ca1729eac9917c8a8977667601453795c90
-        bootstrap-vcpkg.bat
     - name: install
       shell: bash
       run: ./ci/install_windows.sh
     - name: build
       shell: bash
       run: ./ci/build_windows.sh "${VCPKG_INSTALLATION_ROOT}"
+    - name: test
+      shell: bash
+      run: ./ci/test.sh
+
+  testwindows2019mt:
+    runs-on: windows-2019
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static
+    steps:
+    - uses: actions/checkout@v2
+    - name: path
+      run: |
+        # note: system path must be modified in a previous step to it's use
+        echo "::add-path::%VCPKG_INSTALLATION_ROOT%\installed\x64-windows-static\bin"
+        echo "::add-path::${{github.workspace}}\build\openvdb\Release"
+    - name: install
+      shell: bash
+      run: ./ci/install_windows.sh
+    - name: build
+      shell: bash
+      run: |
+        # static build of blosc from vcpkg does not build internal sources.
+        # USE_STATIC_DEPENDENCIES is required for IlmBase/OpenEXR defines and
+        # Boost as both shared and static libs are installed.
+        ./ci/build_windows.sh "${VCPKG_INSTALLATION_ROOT}" \
+          -DUSE_STATIC_DEPENDENCIES=ON \
+          -DBLOSC_USE_EXTERNAL_SOURCES=ON \
+          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
     - name: test
       shell: bash
       run: ./ci/test.sh
