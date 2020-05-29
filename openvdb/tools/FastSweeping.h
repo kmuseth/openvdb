@@ -1056,21 +1056,21 @@ struct FastSweeping<GridT>::SweepingKernel
         Coord *coords = mParent->mCoords.get();
         mParent->mPagedArray.copy(coords);
 
-        /////
-        //std::cerr << "\tVoxel count = " << mParent->mPagedArray.size() << std::endl;
 #ifdef BENCHMARK_FAST_SWEEPING
         timer.restart("Alternative init");
 #endif
-        auto tmp = std::make_unique<uint32_t[]>(mParent->mPagedArray.size());
-        tbb::parallel_for(tbb::blocked_range<size_t>(0, mParent->mPagedArray.size(), 64),
-                          [&](const tbb::blocked_range<size_t>& r){auto *p=&tmp[r.begin()]; for (size_t i = r.begin(); i < r.end(); ++i) *p++=i;});
+        assert( mParent->mPagedArray.size() < static_cast<size_t>(std::numeric_limits<uint32_t>::max()) );
+        const uint32_t count = mParent->mPagedArray.size();
+        auto tmp = std::make_unique<uint32_t[]>(count);
+        
+        tbb::parallel_for(tbb::blocked_range<uint32_t>(0, count, 64),
+                          [&](const tbb::blocked_range<uint32_t>& r){auto *p=&tmp[r.begin()]; for (uint32_t i = r.begin(); i < r.end(); ++i) *p++=i;});
         if (tmp[134] != 134) std::cerr << "ERROR" << std::endl;
         auto hashComp2 = [&](uint32_t &a, uint32_t &b){return hash(coords[a]) < hash(coords[b]);};
 #ifdef BENCHMARK_FAST_SWEEPING
         timer.restart("Alternative sort");
 #endif
         tbb::parallel_sort(&tmp[0], &tmp[0] + mParent->voxelCount(), hashComp2);
-        /////
 
 #ifdef BENCHMARK_FAST_SWEEPING
         timer.restart("Sorting by sweep plane");
