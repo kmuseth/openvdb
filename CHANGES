@@ -3,6 +3,17 @@ OpenVDB Version History
 
 Version 7.1.0 - In Development
 
+    New features:
+    - Parallel fast sweeping to extend, re-build and mask signed distance 
+      and scalar fields.
+    - Added Grid::isTreeUnique() to tell if the tree is shared with another
+      grid.
+    - Added PointDataLeafNode::stealAttributeSet() and
+      AttributeSet::removeAttribute() for releasing ownership of attribute
+      data.
+    - Added AttributeSet::Descriptor::groupIndexCollision() for detecting
+      group index collisions when attempting to merge two Descriptors.
+
     Improvements:
     - Added GroupWriteHandle::setUnsafe() for faster performance when the group
       array is known to be in-core and non-uniform.
@@ -22,15 +33,6 @@ Version 7.1.0 - In Development
     - vdb_view now uses OPENVDB_LOG_FATAL when catching exceptions.
     - vdb_view, vdb_print and vdb_render now use std::terminate() when catching
       an unknown exception.
-
-    New features:
-    - Added Grid::isTreeUnique() to tell if the tree is shared with another
-      grid.
-    - Added PointDataLeafNode::stealAttributeSet() and
-      AttributeSet::removeAttribute() for releasing ownership of attribute
-      data.
-    - Added AttributeSet::Descriptor::groupIndexCollision() for detecting
-      group index collisions when attempting to merge two Descriptors.
 
     Bug fixes:
     - Fixed a bug where grids with no active values might return true when the
