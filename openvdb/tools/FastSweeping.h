@@ -352,17 +352,8 @@ class FastSweeping
                   "FastSweeping requires a grid with floating-point values");
 public:
 
-    /// @brief Constructor from a grid containing a valid level set.
-    ///
-    /// @param grid grid on which to solve the Eikonal equation.
-    /// @param dist distance used for initialization (voxels with an
-    /// absolute value smaller than this are unchanged).
-    ///
-    /// @throw RuntimeError if no voxels exist with an absolute value
-    ///        less than @a dist.
-    /// @note All inactive values will be set to +/- numeric_limits<ValueT>::max()
+    /// @brief Constructor
     FastSweeping();
-    //FastSweeping(GridT &grid, GridT &extend);
 
      /// @brief Destructor.
     ~FastSweeping() { this->clear(); }
@@ -389,36 +380,10 @@ public:
     // use tools::NN_FACE_EDGE for improved dilation
     void initDilate(const GridT &sdfGrid, int dilation, NearestNeighbors nn = NN_FACE);
 
-    /// @brief Constructor from a grid containing a valid level set
-    ///        and an aligned mask tree with intersecting active voxels
-    ///
-    /// @param mask active mask grid, which defines the voxels for
-    ///        which the Eikonal equation will be solved.
-    /// @param ignoreActiveTiles If true active tiles in the mask grid
-    ///        are ignored.
-    /// @param nIter number of iterations, each consisting of eight sweeps.
-    ///
-    /// @details This constructor will check that the transforms of
-    ///          the two grids are identical. Also, if the mask grid
-    ///          is a level set the interior of the surface will act
-    ///          as the mask.
-    ///
-    /// @note All inactive values will be set to +/- numeric_limits<ValueT>::max()
     template<typename MaskTreeT>
     void initMask(const GridT &sdfGrid, const Grid<MaskTreeT> &mask, bool ignoreActiveTiles = false);
 
     /// @brief Perform @a nIter iterations of the fast sweeping algorithm.
-    ///
-    /// @param nIter number of iterations of the fast sweeping algorithm,
-    ///              each consisting of eight sweeps.
-    ///
-    /// @warning Should only be called after the grid has been
-    ///          initialized by an of the init methods,
-    ///          i.e. initMakeSdf, initDilateSdf or initMaskSdf, and
-    ///          before any call to finanize.
-    ///
-    /// @throw RuntimeError if no boundary or compute voxels exist
-    /// (defined in makeSdf, dilateSdf or maskSdf).
     void sweep(int nIter = 1, bool finalize = true);
 
     void clear();// { this->init(nullptr); }
