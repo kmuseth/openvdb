@@ -1157,7 +1157,7 @@ struct FastSweeping<GridT>::SweepingKernel
             Coord *p = mParent->mCoords.get();
             typename PoolT::reference b = pool.local();
             for (size_t i=r.begin(); i!=r.end(); ++i) if (hash(p[i-1])!=hash(p[i])) b.push_back(i);
-	      };
+        };
         planes.push_back(0);
         tbb::parallel_for(tbb::blocked_range<size_t>(1, mParent->voxelCount(), 1<<12), func);// 4096
         for (auto iter=pool.begin(); iter!=pool.end(); ++iter) iter->flush();
