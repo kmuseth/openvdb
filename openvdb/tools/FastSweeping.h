@@ -37,17 +37,14 @@
 #include <type_traits>// for static_assert
 #include <cmath>
 #include <limits>
-#include <thread>
+#include <unordered_map>
 
-#include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
-#include <tbb/parallel_sort.h>
-#include <tbb/parallel_invoke.h>
 #include <tbb/enumerable_thread_specific.h>
+#include <tbb/task_group.h>
 
 #include <openvdb/math/Math.h> // for Abs() and isExactlyEqual()
 #include <openvdb/math/Stencils.h> // for GradStencil
-#include <openvdb/util/PagedArray.h>
 #include <openvdb/tree/LeafManager.h>
 #include "LevelSetUtil.h"
 #include "Morphology.h"
@@ -56,8 +53,6 @@
 #ifdef BENCHMARK_FAST_SWEEPING
 #include <openvdb/util/CpuTimer.h>
 #endif
-
-#include <openvdb/math/Stats.h>
 
 namespace openvdb {
 OPENVDB_USE_VERSION_NAMESPACE
@@ -346,6 +341,8 @@ class FastSweeping
     using ValueT = typename GridT::ValueType;
     using TreeT  = typename GridT::TreeType;
     using AccT   = tree::ValueAccessor<TreeT, false>;//don't register accessors
+    using SweepMaskTreeT = typename TreeT::template ValueConverter<ValueMask>::Type;
+    using SweepMaskAccT = tree::ValueAccessor<SweepMaskTreeT, false>;//don't register accessors
 
     // This class can only be templated on a grid with floating-point values!
     static_assert(std::is_floating_point<ValueT>::value,
@@ -386,20 +383,22 @@ public:
     /// @brief Perform @a nIter iterations of the fast sweeping algorithm.
     void sweep(int nIter = 1, bool finalize = true);
 
-    void clear();// { this->init(nullptr); }
+    void clear();
 
     /// @brief Return the number of voxels that will be solved for.
-    size_t voxelCount() const { return mPagedArray.size(); }
+    size_t voxelCount() const;
 
     /// @brief Return the number of voxels that defined the boundary condition.
-    size_t boundaryCount() const { return mBoundaryCount; }
+    size_t boundaryCount() const;
+
+    /// @brief Prune the sweep mask and cache leaf origins.
+    void computeSweepMaskLeafOrigins();
 
     /// @brief Return true if there are voxels and boundaries to solve for
     bool isValid() const { return this->voxelCount() > 0 && this->boundaryCount() > 0; }
 private:
 
     // Private classes to initialize the grid and construct
-    // mPagedArray with voxel coordinates.
     template<typename>
     struct MaskKernel;//   initialization to extand a SDF into a mask
     template<typename>
@@ -409,16 +408,13 @@ private:
     struct MinMaxKernel;
     struct SweepingKernel;// Private class to perform the actual concurrent sparse fast sweeping
 
-    using CoordArrayT = util::PagedArray<Coord, 12>;//unsorted PagedArray with a page size of 4096
-
     // Define the topology (i.e. stencil) of the neighboring grid points
     static const Coord mOffset[6];// = {{-1,0,0},{1,0,0},{0,-1,0},{0,1,0},{0,0,-1},{0,0,1}};
 
     // Private member data of FastSweeping
     typename GridT::Ptr mGrid1, mGrid2;//shared pointers, so using atomic counters!
-    std::unique_ptr<Coord[]> mCoords;//sorted c-style array (this pointer is lock free)
-    CoordArrayT mPagedArray;//unsorted PagedArray of voxel coordinates
-    tbb::atomic<size_t> mBoundaryCount;// number of voxels defining the bounday condition
+    SweepMaskTreeT mSweepMask; // mask tree containing all non-boundary active voxels
+    std::vector<Coord> mSweepMaskLeafOrigins; // cache of leaf node origins for mask tree
 };// FastSweeping
 
 // Static member data initialization
@@ -429,7 +425,7 @@ const Coord FastSweeping<GridT>::mOffset[6] = {{-1,0,0},{1,0,0},
 
 template <typename GridT>
 FastSweeping<GridT>::FastSweeping()
-    : mGrid1(nullptr), mGrid2(nullptr), mCoords(nullptr), mPagedArray(), mBoundaryCount(0)
+    : mGrid1(nullptr), mGrid2(nullptr)
 {
 }
 
@@ -438,9 +434,41 @@ void FastSweeping<GridT>::clear()
 {
     mGrid1.reset();
     mGrid2.reset();
-    mCoords.reset();
-    mPagedArray.clear();
-    mBoundaryCount = 0;
+    mSweepMask.clear();
+}
+
+template <typename GridT>
+size_t FastSweeping<GridT>::voxelCount() const
+{
+    return mSweepMask.activeVoxelCount();
+}
+
+template <typename GridT>
+size_t FastSweeping<GridT>::boundaryCount() const
+{
+    if (!mGrid1)  return size_t(0);
+    return mGrid1->constTree().activeVoxelCount() - this->voxelCount();
+}
+
+template <typename GridT>
+void FastSweeping<GridT>::computeSweepMaskLeafOrigins()
+{
+    // replace any inactive leaf nodes with tiles and voxelize any active tiles
+
+    pruneInactive(mSweepMask);
+    mSweepMask.voxelizeActiveTiles();
+
+    using LeafManagerT = tree::LeafManager<SweepMaskTreeT>;
+    using LeafT = typename SweepMaskTreeT::LeafNodeType;
+    LeafManagerT leafManager(mSweepMask);
+
+    mSweepMaskLeafOrigins.resize(leafManager.leafCount());
+    leafManager.foreach(
+        [&](const LeafT& leaf, size_t leafIdx)
+        {
+            mSweepMaskLeafOrigins[leafIdx] = leaf.origin();
+        }, /*threaded=*/true, /*grainsize=*/1024
+    );
 }
 
 template <typename GridT>
@@ -519,21 +547,31 @@ void FastSweeping<GridT>::sweep(int nIter, bool finalize)
         OPENVDB_THROW(RuntimeError, "FastSweeping: No computing voxels found!");
     }
 
-    // Coord has a non-empty default constructor so we use the following trick to
-    // avoid initialization of the large array of Coords. The resulting
-    // allocation is virtually instantaneous. Note, we use mCoords as
-    // temporal storage of mPagedArray since this allows us to avoid
-    // performing multiple sorts directly on mPagedArray, which has poor
-    // performance due to the fact that the sorts are done with
-    // respect to changing hash functions (resulting in worst-case inputs).
-    mCoords.reset(reinterpret_cast<Coord*>(new char[sizeof(Coord)*mPagedArray.size()]));
+    // note: SweepingKernel is non copy-constructible, so use a deque instead of a vector
+    std::deque<SweepingKernel> kernels;
+    for (int i = 0; i < 4; i++)     kernels.emplace_back(*this);
 
-    SweepingKernel kernel(*this);
+    { // compute voxel slices
+#ifdef BENCHMARK_FAST_SWEEPING
+        util::CpuTimer timer("Computing voxel slices");
+#endif
+
+        // Exploiting nested parallelism - all voxel slice data is precomputed
+        tbb::task_group tasks;
+        tasks.run([&] { kernels[0].computeVoxelSlices([](const Coord &a){ return a[0]+a[1]+a[2]; });/*+++ & ---*/ });
+        tasks.run([&] { kernels[1].computeVoxelSlices([](const Coord &a){ return a[0]+a[1]-a[2]; });/*++- & --+*/ });
+        tasks.run([&] { kernels[2].computeVoxelSlices([](const Coord &a){ return a[0]-a[1]+a[2]; });/*+-+ & -+-*/ });
+        tasks.run([&] { kernels[3].computeVoxelSlices([](const Coord &a){ return a[0]-a[1]-a[2]; });/*+-- & -++*/ });
+        tasks.wait();
+
+#ifdef BENCHMARK_FAST_SWEEPING
+        timer.stop();
+#endif
+    }
+
+    // perform nIter iterations of bi-directional sweeping in all directions
     for (int i = 0; i < nIter; ++i) {
-        kernel.sweep([](const Coord &a){ return a[0]+a[1]+a[2]; });//+++ & ---
-        kernel.sweep([](const Coord &a){ return a[0]+a[1]-a[2]; });//++- & --+
-        kernel.sweep([](const Coord &a){ return a[0]-a[1]+a[2]; });//+-+ & -+-
-        kernel.sweep([](const Coord &a){ return a[0]-a[1]-a[2]; });//+-- & -++
+        for (SweepingKernel& kernel : kernels)   kernel.sweep();
     }
 
     if (finalize) {
@@ -548,6 +586,7 @@ void FastSweeping<GridT>::sweep(int nIter, bool finalize)
       timer.restart("Changing asymmetric background value");
 #endif
       changeAsymmetricLevelSetBackground(mGrid1->tree(), e.max(), e.min());//multi-threaded
+
 #ifdef BENCHMARK_FAST_SWEEPING
       timer.stop();
 #endif
@@ -595,10 +634,8 @@ template <typename GridT>
 struct FastSweeping<GridT>::DilateKernel
 {
     using LeafRange = typename tree::LeafManager<TreeT>::LeafRange;
-    using BufferT = typename FastSweeping::CoordArrayT::ValueBuffer;//util::PagedArray<Coord, 10>::ValueBuffer;
-    using PoolT = tbb::enumerable_thread_specific<BufferT>;
     DilateKernel(FastSweeping &parent)
-        : mParent(&parent), mPool(nullptr), mBackground(parent.mGrid1->background())
+        : mParent(&parent), mBackground(parent.mGrid1->background())
     {
     }
     DilateKernel(const DilateKernel &parent) = default;// for tbb::parallel_for
@@ -629,41 +666,46 @@ struct FastSweeping<GridT>::DilateKernel
         //dilateVoxels(mgr, dilation, nn);
 
 #ifdef BENCHMARK_FAST_SWEEPING
-        timer.restart("Initializing grid and coords");
+        timer.restart("Initializing grid and sweep mask");
 #endif
-        BufferT prototype(mParent->mPagedArray);//exemplar used for initialization
-        PoolT pool(prototype);//thread local storage pool of ValueBuffers
-        mPool = &pool;
-        tbb::parallel_for(mgr.leafRange(32), *this);//multi-threaded
-        for (auto i = pool.begin(); i != pool.end(); ++i) i->flush();
+
+        mParent->mSweepMask.clear();
+        mParent->mSweepMask.topologyUnion(mParent->mGrid1->constTree());
+
+        using LeafManagerT = tree::LeafManager<typename GridT::TreeType>;
+        using LeafT = typename GridT::TreeType::LeafNodeType;
+        LeafManagerT leafManager(mParent->mGrid1->tree());
+
+        leafManager.foreach(
+            [&](LeafT& leaf, size_t /*leafIdx*/)
+            {
+                static const ValueT Unknown = std::numeric_limits<ValueT>::max();
+                const ValueT background = mBackground;//local copy
+                auto* maskLeaf = mParent->mSweepMask.probeLeaf(leaf.origin());
+                assert(maskLeaf);
+                for (auto voxelIter = leaf.beginValueOn(); voxelIter; ++voxelIter) {
+                    const ValueT value = *voxelIter;
+                    if (math::Abs(value) < background) {
+                        // disable boundary voxels from the mask tree
+                        maskLeaf->setValueOff(voxelIter.pos());
+                    } else {
+                        voxelIter.setValue(value > 0 ? Unknown : -Unknown);
+                    }
+                }
+            }
+        );
+
+        // cache the leaf node origins for fast lookup in the sweeping kernels
+
+        mParent->computeSweepMaskLeafOrigins();
 
 #ifdef BENCHMARK_FAST_SWEEPING
         timer.stop();
 #endif
     }
 
-    void operator()(const LeafRange& r) const
-    {
-        typename PoolT::reference buffer = mPool->local();
-        static const ValueT Unknown = std::numeric_limits<ValueT>::max();
-        const ValueT background = mBackground;//local copy
-        size_t boundaryCount = 0;
-        for (auto leafIter = r.begin(); leafIter; ++leafIter) {
-            for (auto voxelIter = leafIter->beginValueOn(); voxelIter; ++voxelIter) {
-                const ValueT value = *voxelIter;
-                if (math::Abs(value) < background) {
-                    ++boundaryCount;
-                } else {
-                    buffer.push_back(voxelIter.getCoord());
-                    voxelIter.setValue(value > 0 ? Unknown : -Unknown);
-                }
-            }
-        }
-        mParent->mBoundaryCount += boundaryCount;//reduces pressure on the atomic
-    }
     // Private member data of DilateKernel
     FastSweeping *mParent;
-    PoolT        *mPool;
     const ValueT  mBackground;
 };// DilateKernel
 
@@ -672,19 +714,15 @@ template <typename GridT>
 struct FastSweeping<GridT>::InitSdf
 {
     using LeafRange = typename tree::LeafManager<TreeT>::LeafRange;
-    using BufferT = typename FastSweeping::CoordArrayT::ValueBuffer;//util::PagedArray<Coord, 10>::ValueBuffer;
-    using BufferPoolT = tbb::enumerable_thread_specific<BufferT>;
-    using StencilT = math::GradStencil<GridT, false>;
-    using StencilPoolT = tbb::enumerable_thread_specific<StencilT>;
-    InitSdf(FastSweeping &parent): mParent(&parent), mBufferPool(nullptr),
-      mStencilPool(nullptr), mGrid1(parent.mGrid1.get()), mIsoValue(0), mAboveSign(0) {}
+    InitSdf(FastSweeping &parent): mParent(&parent),
+      mGrid1(parent.mGrid1.get()), mIsoValue(0), mAboveSign(0) {}
     InitSdf(const InitSdf&) = default;// for tbb::parallel_for
     InitSdf& operator=(const InitSdf&) = delete;
 
     void run(ValueT isoValue, bool isInputSdf)
     {
         mIsoValue   = isoValue;
-        mAboveSign  = isInputSdf ? 1 : -1;
+        mAboveSign  = isInputSdf ? ValueT(1) : ValueT(-1);
         TreeT &tree = mGrid1->tree();//sdf
         const bool hasActiveTiles = tree.hasActiveTiles();
 
@@ -695,15 +733,8 @@ struct FastSweeping<GridT>::InitSdf
 #ifdef BENCHMARK_FAST_SWEEPING
         util::CpuTimer  timer("Initialize voxels");
 #endif
-        // Define thread-local container for coordinates
-        BufferT prototype(mParent->mPagedArray);//exemplar used for initialization
-        BufferPoolT bufferPool(prototype);//thread local storage pool of ValueBuffers
-        mBufferPool = &bufferPool;
-
-        // Define thread-local stencil
-        StencilT stencilPrototype(*(mGrid1));
-        StencilPoolT stencilPool(stencilPrototype);
-        mStencilPool = &stencilPool;
+        mParent->mSweepMask.clear();
+        mParent->mSweepMask.topologyUnion(mParent->mGrid1->constTree());
 
         {// Process all voxels
           tree::LeafManager<TreeT> mgr(tree, 1);// we need one auxiliary buffer
@@ -720,20 +751,16 @@ struct FastSweeping<GridT>::InitSdf
         tree.root().setBackground(std::numeric_limits<ValueT>::max(), false);
         if (hasActiveTiles) tree.voxelizeActiveTiles();//multi-threaded
 
-        // Merge all coordinate buffers
-        for (auto i = bufferPool.begin(); i != bufferPool.end(); ++i) i->flush();
+        // cache the leaf node origins for fast lookup in the sweeping kernels
 
-#ifdef BENCHMARK_FAST_SWEEPING
-        timer.stop();
-#endif
+        mParent->computeSweepMaskLeafOrigins();
     }
     void operator()(const LeafRange& r) const
     {
-        typename BufferPoolT::reference buffer = mBufferPool->local();
-        typename StencilPoolT::reference stencil = mStencilPool->local();
+        SweepMaskAccT sweepMaskAcc(mParent->mSweepMask);
+        math::GradStencil<GridT, false> stencil(*mGrid1);
         const ValueT isoValue = mIsoValue, above = mAboveSign*std::numeric_limits<ValueT>::max();//local copy
         const ValueT h = mAboveSign*static_cast<ValueT>(mGrid1->voxelSize()[0]);//Voxel size
-        size_t boundaryCount = 0;
         for (auto leafIter = r.begin(); leafIter; ++leafIter) {
             ValueT* sdf = leafIter.buffer(1).data();
             for (auto voxelIter = leafIter->beginValueAll(); voxelIter; ++voxelIter) {
@@ -746,10 +773,10 @@ struct FastSweeping<GridT>::InitSdf
                   stencil.moveTo(ijk, value);
                   const auto mask = stencil.intersectionMask( isoValue );
                   if (mask.none()) {// most common case
-                    buffer.push_back(ijk);
                     sdf[voxelIter.pos()] = isAbove ? above : -above;
                   } else {// compute distance to iso-surface
-                    ++boundaryCount;
+                    // disable boundary voxels from the mask tree
+                    sweepMaskAcc.setValueOff(ijk);
                     const ValueT delta = value - isoValue;//offset relative to iso-value
                     if (math::isApproxZero(delta)) {//voxel is on the iso-surface
                       sdf[voxelIter.pos()] = 0;
@@ -770,7 +797,6 @@ struct FastSweeping<GridT>::InitSdf
                 }// active voxels
             }// loop over voxels
         }// loop over leaf nodes
-        mParent->mBoundaryCount += boundaryCount;//reduces pressure on the atomic
     }// operator(const LeafRange& r)
     template<typename RootOrInternalNodeT>
     void operator()(const RootOrInternalNodeT& node) const
@@ -779,17 +805,10 @@ struct FastSweeping<GridT>::InitSdf
         for (auto it = node.cbeginValueAll(); it; ++it) {
           ValueT& v = const_cast<ValueT&>(*it);
           v = v > isoValue ? above : -above;
-          if (it.isValueOn()) {//add coordinates of active tiles to buffer
-            typename BufferPoolT::reference buffer = mBufferPool->local();
-            const auto bbox = CoordBBox::createCube(it.getCoord(), node.getChildDim());
-            for (auto i = bbox.begin(); i; ++i) buffer.push_back(*i);
-          }//active tiles
         }//loop over all tiles
     }
     // Public member data
     FastSweeping *mParent;
-    BufferPoolT  *mBufferPool;
-    StencilPoolT *mStencilPool;
     GridT        *mGrid1;//raw pointer, i.e. lock free
     ValueT        mIsoValue;
     ValueT        mAboveSign;//sign of distance values above the iso-value
@@ -801,14 +820,9 @@ template <typename OpT>
 struct FastSweeping<GridT>::InitExt
 {
     using LeafRange = typename tree::LeafManager<TreeT>::LeafRange;
-    //using BufferT = typename util::PagedArray<Coord, 10>::ValueBuffer;
-    using BufferT = typename FastSweeping::CoordArrayT::ValueBuffer;
-    using BufferPoolT = tbb::enumerable_thread_specific<BufferT>;
-    using StencilT = math::GradStencil<GridT, false>;
-    using StencilPoolT = tbb::enumerable_thread_specific<StencilT>;
     using OpPoolT = tbb::enumerable_thread_specific<OpT>;
-    InitExt(FastSweeping &parent) : mParent(&parent), mBufferPool(nullptr),
-      mStencilPool(nullptr), mOpPool(nullptr), mGrid1(parent.mGrid1.get()),
+    InitExt(FastSweeping &parent) : mParent(&parent),
+      mOpPool(nullptr), mGrid1(parent.mGrid1.get()),
       mGrid2(parent.mGrid2.get()), mIsoValue(0), mAboveSign(0) {}
     InitExt(const InitExt&) = default;// for tbb::parallel_for
     InitExt& operator=(const InitExt&) = delete;
@@ -819,7 +833,7 @@ struct FastSweeping<GridT>::InitExt
           OPENVDB_THROW(RuntimeError, "FastSweeping::InitExt expected an extension grid!");
         }
 
-        mAboveSign  = isInputSdf ? 1.0f : -1.0f;
+        mAboveSign  = isInputSdf ? ValueT(1) : ValueT(-1);
         mIsoValue = isoValue;
         TreeT &tree1 = mGrid1->tree(), &tree2 = mGrid2->tree();
         const bool hasActiveTiles = tree1.hasActiveTiles();//very fast
@@ -831,17 +845,11 @@ struct FastSweeping<GridT>::InitExt
 #ifdef BENCHMARK_FAST_SWEEPING
         util::CpuTimer  timer("Initialize voxels");
 #endif
-        // Define thread-local container for coordinates
-        BufferT prototype(mParent->mPagedArray);//exemplar used for initialization
-        BufferPoolT bufferPool(prototype);//thread local storage pool of ValueBuffers
-        mBufferPool = &bufferPool;
+
+        mParent->mSweepMask.clear();
+        mParent->mSweepMask.topologyUnion(mParent->mGrid1->constTree());
 
         {// Process all voxels
-          // Define thread-local stencils
-          StencilT stencilPrototype(*(mGrid1));
-          StencilPoolT stencilPool(stencilPrototype);
-          mStencilPool = &stencilPool;
-
           // Define thread-local operators
           OpPoolT opPool(opPrototype);
           mOpPool = &opPool;
@@ -867,11 +875,10 @@ struct FastSweeping<GridT>::InitExt
             tree2.voxelizeActiveTiles();//multi-threaded
           }
         }
-#ifdef BENCHMARK_FAST_SWEEPING
-        timer.restart("Merging coordinates");
-#endif
-        // Merge all coordinate buffers
-        for (auto i = bufferPool.begin(); i != bufferPool.end(); ++i) i->flush();//fast
+
+        // cache the leaf node origins for fast lookup in the sweeping kernels
+
+        mParent->computeSweepMaskLeafOrigins();
 
 #ifdef BENCHMARK_FAST_SWEEPING
         timer.stop();
@@ -879,14 +886,13 @@ struct FastSweeping<GridT>::InitExt
     }
     void operator()(const LeafRange& r) const
     {
+        SweepMaskAccT sweepMaskAcc(mParent->mSweepMask);
+        math::GradStencil<GridT, false> stencil(*mGrid1);
         const math::Transform& xform = mGrid2->transform();
         AccT acc(mGrid2->tree());
-        typename BufferPoolT::reference buffer = mBufferPool->local();
-        typename StencilPoolT::reference stencil = mStencilPool->local();
         typename OpPoolT::reference op = mOpPool->local();
         const ValueT isoValue = mIsoValue, above = mAboveSign*std::numeric_limits<ValueT>::max();//local copy
         const ValueT h = mAboveSign*static_cast<ValueT>(mGrid1->voxelSize()[0]);//Voxel size
-        size_t boundaryCount = 0;
         for (auto leafIter = r.begin(); leafIter; ++leafIter) {
             ValueT *sdf = leafIter.buffer(1).data();
             ValueT *ext = acc.probeLeaf(leafIter->origin())->buffer().data();//should be safe!
@@ -900,10 +906,10 @@ struct FastSweeping<GridT>::InitExt
                   stencil.moveTo(ijk, value);
                   const auto mask = stencil.intersectionMask( isoValue );
                   if (mask.none()) {// no zero-crossing neighbors, most common case
-                    buffer.push_back(ijk);
                     sdf[voxelIter.pos()] = isAbove ? above : -above;
                   } else {// compute distance to iso-surface
-                    ++boundaryCount;
+                    // disable boundary voxels from the mask tree
+                    sweepMaskAcc.setValueOff(ijk);
                     const ValueT delta = value - isoValue;//offset relative to iso-value
                     if (math::isApproxZero(delta)) {//voxel is on the iso-surface
                       sdf[voxelIter.pos()] = 0;
@@ -926,9 +932,10 @@ struct FastSweeping<GridT>::InitExt
                         if (d < std::numeric_limits<ValueT>::max()) {
                           d2 = 1/(d*d);
                           sum1 += d2;
-                          const Vec3R xyz(ijk[0]+d*FastSweeping::mOffset[n][0],
-                                          ijk[1]+d*FastSweeping::mOffset[n][1],
-                                          ijk[2]+d*FastSweeping::mOffset[n][2]);
+                          const Vec3R xyz(
+                              static_cast<ValueT>(ijk[0])+d*static_cast<ValueT>(FastSweeping::mOffset[n][0]),
+                              static_cast<ValueT>(ijk[1])+d*static_cast<ValueT>(FastSweeping::mOffset[n][1]),
+                              static_cast<ValueT>(ijk[2])+d*static_cast<ValueT>(FastSweeping::mOffset[n][2]));
                           sum2 += op(xform.indexToWorld(xyz))*d2;
                         }
                       }//look over six cases
@@ -939,7 +946,6 @@ struct FastSweeping<GridT>::InitExt
                 }// active voxels
             }// loop over voxels
         }// loop over leaf nodes
-        mParent->mBoundaryCount += boundaryCount;//reduces pressure on the atomic
     }// operator(const LeafRange& r)
     template<typename RootOrInternalNodeT>
     void operator()(const RootOrInternalNodeT& node) const
@@ -948,21 +954,14 @@ struct FastSweeping<GridT>::InitExt
         for (auto it = node.cbeginValueAll(); it; ++it) {
           ValueT& v = const_cast<ValueT&>(*it);
           v = v > isoValue ? above : -above;
-          if (it.isValueOn()) {//add coordinates of active tiles to buffer
-            typename BufferPoolT::reference buffer = mBufferPool->local();
-            const auto bbox = CoordBBox::createCube(it.getCoord(), node.getChildDim());
-            for (auto i = bbox.begin(); i; ++i) buffer.push_back(*i);
-          }//active tiles
         }//loop over all tiles
     }
     // Public member data
     FastSweeping *mParent;
-    BufferPoolT  *mBufferPool;
-    StencilPoolT *mStencilPool;
     OpPoolT      *mOpPool;
     GridT        *mGrid1, *mGrid2;//raw pointers, i.e. lock free
     ValueT        mIsoValue;
-    int           mAboveSign;//sign of distance values above the iso-value
+    ValueT        mAboveSign;//sign of distance values above the iso-value
 };// InitExt
 
 /// Private class of FastSweeping to perform multi-threaded initialization
@@ -971,10 +970,7 @@ template <typename MaskTreeT>
 struct FastSweeping<GridT>::MaskKernel
 {
     using LeafRange = typename tree::LeafManager<const MaskTreeT>::LeafRange;
-    using BufferT = typename FastSweeping::CoordArrayT::ValueBuffer;
-    //using BufferT = typename util::PagedArray<Coord, 10>::ValueBuffer;
-    using BufferPoolT = tbb::enumerable_thread_specific<BufferT>;
-    MaskKernel(FastSweeping &parent) : mParent(&parent), mBufferPool(nullptr),
+    MaskKernel(FastSweeping &parent) : mParent(&parent),
       mGrid1(parent.mGrid1.get()) {}
     MaskKernel(const MaskKernel &parent) = default;// for tbb::parallel_for
     MaskKernel& operator=(const MaskKernel&) = delete;
@@ -1002,45 +998,44 @@ struct FastSweeping<GridT>::MaskKernel
         tree::LeafManager<const MaskTreeT> mgr(mask);// super fast
 
 #ifdef BENCHMARK_FAST_SWEEPING
-        timer.restart("Initializing grid and coords");
+        timer.restart("Initializing grid and sweep mask");
 #endif
-        // Define thread-local container for coordinates
-        BufferT prototype(mParent->mPagedArray);//exemplar used for initialization
-        BufferPoolT bufferPool(prototype);//thread local storage pool of ValueBuffers
-        mBufferPool = &bufferPool;
 
-        tbb::parallel_for(mgr.leafRange(32), *this);//multi-threaded
-        for (auto i = bufferPool.begin(); i != bufferPool.end(); ++i) i->flush();
+        mParent->mSweepMask.clear();
+        mParent->mSweepMask.topologyUnion(mParent->mGrid1->constTree());
+
+        using LeafManagerT = tree::LeafManager<SweepMaskTreeT>;
+        using LeafT = typename SweepMaskTreeT::LeafNodeType;
+        LeafManagerT leafManager(mParent->mSweepMask);
+
+        leafManager.foreach(
+            [&](LeafT& leaf, size_t /*leafIdx*/)
+            {
+                static const ValueT Unknown = std::numeric_limits<ValueT>::max();
+                AccT acc(mGrid1->tree());
+                // The following hack is safe due to the topoloyUnion in
+                // init and the fact that ValueT is known to be a floating point!
+                ValueT *data = acc.probeLeaf(leaf.origin())->buffer().data();
+                for (auto voxelIter = leaf.beginValueOn(); voxelIter; ++voxelIter) {// mask voxels
+                    if (math::Abs( data[voxelIter.pos()] ) < Unknown ) {
+                        // disable boundary voxels from the mask tree
+                        voxelIter.setValue(false);
+                    }
+                }
+            }
+        );
+
+        // cache the leaf node origins for fast lookup in the sweeping kernels
+
+        mParent->computeSweepMaskLeafOrigins();
 
 #ifdef BENCHMARK_FAST_SWEEPING
         timer.stop();
 #endif
     }
 
-    void operator()(const LeafRange& r) const
-    {
-        typename BufferPoolT::reference buffer = mBufferPool->local();
-        static const ValueT Unknown = std::numeric_limits<ValueT>::max();
-        AccT acc(mGrid1->tree());
-        size_t boundaryCount = 0;
-        for (auto leafIter = r.begin(); leafIter; ++leafIter) {// mask leafs
-            // The following hack is safe due to the topoloyUnion in
-            // init and the fact that ValueT is known to be a floating point!
-            ValueT *data = acc.probeLeaf(leafIter->origin())->buffer().data();
-            for (auto voxelIter = leafIter->cbeginValueOn(); voxelIter; ++voxelIter) {// mask voxels
-                if (math::Abs( data[voxelIter.pos()] ) < Unknown ) {
-                    ++boundaryCount;
-                } else {
-                    buffer.push_back(voxelIter.getCoord());
-                }
-            }
-        }
-        mParent->mBoundaryCount += boundaryCount;//reduces pressure on the atomic
-    }
-
     // Private member data of MaskKernel
     FastSweeping *mParent;
-    BufferPoolT  *mBufferPool;
     GridT        *mGrid1;//raw pointer, i.e. lock free
 };// MaskKernel
 
@@ -1048,207 +1043,321 @@ struct FastSweeping<GridT>::MaskKernel
 template <typename GridT>
 struct FastSweeping<GridT>::SweepingKernel
 {
-    SweepingKernel(FastSweeping &parent) : mParent(&parent),
-      mAcc1(parent.mGrid1->tree()), mTree2(parent.mGrid2?&parent.mGrid2->tree():nullptr),
-      mVoxelSize(static_cast<ValueT>(parent.mGrid1->voxelSize()[0])) {}
-    SweepingKernel(const SweepingKernel&) = default;
+    SweepingKernel(FastSweeping &parent) : mParent(&parent) { }
+    SweepingKernel(const SweepingKernel&) = delete;
     SweepingKernel& operator=(const SweepingKernel&) = delete;
 
     /// Main method that performs concurrent bi-directional sweeps
     template<typename HashOp>
-    void sweep(HashOp hash)
+    void computeVoxelSlices(HashOp hash)
     {
 #ifdef BENCHMARK_FAST_SWEEPING
-        util::CpuTimer timer("\nConcurrent copy of coordinates");
+        util::CpuTimer timer;
 #endif
-        Coord *coords = mParent->mCoords.get();
-        mParent->mPagedArray.copy(coords);
 
-#ifdef BENCHMARK_FAST_SWEEPING
-        timer.restart("Alternative init");
-#endif
-        assert( mParent->mPagedArray.size() < static_cast<size_t>(std::numeric_limits<uint32_t>::max()) );
+        // this mask tree only stores the active voxels in use in the sweeping, not the boundary voxels
+        const SweepMaskTreeT& maskTree = mParent->mSweepMask;
 
-        //const uint32_t count = mParent->mPagedArray.size();
-        //auto tmp = std::make_unique<uint32_t[]>(count);
-        //tbb::parallel_for(tbb::blocked_range<uint32_t>(0, count, 64),
-        //                  [&](const tbb::blocked_range<uint32_t>& r){auto *p=&tmp[r.begin()]; for (uint32_t i = r.begin(); i < r.end(); ++i) *p++=i;});
-        //if (tmp[134] != 134) std::cerr << "ERROR" << std::endl;
-        //auto hashComp2 = [&](uint32_t a, uint32_t b){return hash(coords[a]) < hash(coords[b]);};
-#ifdef BENCHMARK_FAST_SWEEPING
-        timer.restart("Alternative sort");
-#endif
-        //tbb::parallel_sort(&tmp[0], &tmp[0] + mParent->voxelCount(), hashComp2);
+        using LeafManagerT = typename tree::LeafManager<const SweepMaskTreeT>;
+        using LeafT = typename SweepMaskTreeT::LeafNodeType;
+        LeafManagerT leafManager(maskTree);
 
-#ifdef BENCHMARK_FAST_SWEEPING
-        timer.restart("Sorting by sweep plane");
-#endif
-        auto hashComp = [&hash](const Coord &a, const Coord &b){return hash(a) < hash(b);};
-        tbb::parallel_sort(coords, coords + mParent->voxelCount(), hashComp);
+        ////////////////////////////////////////////////
+        // compute the leaf node slices that have active voxels in them
+        // the sliding window of the slices is -14 => 22 (based on an 8x8x8 leaf node),
+        // but we use a larger mask window here to easily accomodate any leaf dimension.
+        // the mask offset is used to be able to store this in a fixed-size byte array
+        ////////////////////////////////////////////////
 
-#ifdef BENCHMARK_FAST_SWEEPING
-        timer.restart("Computing number of sweep planes");
-#endif
-        util::PagedArray<size_t, 6> planes;
-        this->buildPlanes(hash, planes);
+        constexpr int maskOffset = LeafT::DIM * 3;
+        constexpr int maskRange = maskOffset * 2;
 
-        auto range = [&](size_t i) {
-          static const size_t min = 16, size = 100*std::thread::hardware_concurrency();
-          const size_t grainSize = std::max((planes[i] - planes[i-1])/size, min);
-          //const size_t grainSize = 1024;//2048;//512;//seems very sensitive to the grain size!
-          return tbb::blocked_range<size_t>(planes[i-1], planes[i], grainSize);
+        // mark each possible slice in each leaf node that has one or more active voxels in it
+
+        std::vector<int8_t> leafSliceMasks(leafManager.leafCount()*maskRange);
+
+        leafManager.foreach(
+            [&](const LeafT& leaf, size_t leafIdx)
+            {
+                const size_t leafOffset = leafIdx * maskRange;
+                for (auto voxelIter = leaf.cbeginValueOn(); voxelIter; ++voxelIter) {
+                    const Index voxelIdx = voxelIter.pos();
+                    const Coord ijk = LeafT::offsetToLocalCoord(voxelIdx);
+                    const size_t key = hash(ijk) + maskOffset;
+                    leafSliceMasks[leafOffset + key] = uint8_t(1);
+                }
+            }
+        );
+
+        ////////////////////////////////////////////////
+        // compute the voxel slice map using a thread-local-storage hash map
+        // the key of the hash map is the slice index of the voxel coord (ijk.x() + ijk.y() + ijk.z())
+        // the values are an array of indices for every leaf that has active voxels with this slice index
+        ////////////////////////////////////////////////
+
+        using ThreadLocalMap = std::unordered_map</*voxelSliceKey=*/int64_t, /*leafIdx=*/std::deque<size_t>>;
+        tbb::enumerable_thread_specific<ThreadLocalMap> pool;
+
+        leafManager.foreach(
+            [&](const LeafT& leaf, size_t leafIdx)
+            {
+                ThreadLocalMap& map = pool.local();
+                const Coord& origin = leaf.origin();
+                const int64_t leafKey = hash(origin);
+                const size_t leafOffset = leafIdx * maskRange;
+                for (int sliceIdx = 0; sliceIdx < maskRange; sliceIdx++) {
+                    if (leafSliceMasks[leafOffset + sliceIdx] == uint8_t(1)) {
+                        const int64_t voxelSliceKey = leafKey+sliceIdx-maskOffset;
+                        assert(voxelSliceKey >= 0);
+                        map[voxelSliceKey].emplace_back(leafIdx);
+                    }
+                }
+            }
+        );
+
+        ////////////////////////////////////////////////
+        // combine into a single ordered map keyed by the voxel slice key
+        // note that this is now stored in a map ordered by voxel slice key,
+        // so sweep slices can be processed in order
+        ////////////////////////////////////////////////
+
+        for (auto poolIt = pool.begin(); poolIt != pool.end(); ++poolIt) {
+            const ThreadLocalMap& map = *poolIt;
+            for (const auto& it : map) {
+                for (const size_t leafIdx : it.second) {
+                    mVoxelSliceMap[it.first].emplace_back(leafIdx, NodeMaskPtrT());
+                }
+            }
+        }
+
+        ////////////////////////////////////////////////
+        // extract the voxel slice keys for random access into the map
+        ////////////////////////////////////////////////
+
+        mVoxelSliceKeys.reserve(mVoxelSliceMap.size());
+        for (const auto& it : mVoxelSliceMap) {
+            mVoxelSliceKeys.push_back(it.first);
+        }
+
+        ////////////////////////////////////////////////
+        // allocate the node masks in parallel, as the map is populated in serial
+        ////////////////////////////////////////////////
+
+        tbb::parallel_for(
+            tbb::blocked_range<size_t>(0, mVoxelSliceKeys.size()),
+            [&](tbb::blocked_range<size_t>& range)
+            {
+                for (size_t i = range.begin(); i < range.end(); i++) {
+                    const int64_t key = mVoxelSliceKeys[i];
+                    for (auto& it : mVoxelSliceMap[key]) {
+                        it.second = std::make_unique<NodeMaskT>();
+                    }
+                }
+            }
+        );
+
+        ////////////////////////////////////////////////
+        // each voxel slice contains a leafIdx-nodeMask pair,
+        // this routine populates these node masks to select only the active voxels
+        // from the mask tree that have the same voxel slice key
+        // TODO: a small optimization here would be to union this leaf node mask with
+        // a pre-computed one for this particular slice pattern
+        ////////////////////////////////////////////////
+
+        tbb::parallel_for(
+            tbb::blocked_range<size_t>(0, mVoxelSliceKeys.size()),
+            [&](tbb::blocked_range<size_t>& range)
+            {
+                for (size_t i = range.begin(); i < range.end(); i++) {
+                    const int64_t voxelSliceKey = mVoxelSliceKeys[i];
+                    LeafSliceArray& leafSliceArray = mVoxelSliceMap[voxelSliceKey];
+                    for (LeafSlice& leafSlice : leafSliceArray) {
+                        const size_t leafIdx = leafSlice.first;
+                        NodeMaskPtrT& nodeMask = leafSlice.second;
+                        const LeafT& leaf = leafManager.leaf(leafIdx);
+                        const Coord& origin = leaf.origin();
+                        const int64_t leafKey = hash(origin);
+                        for (auto voxelIter = leaf.cbeginValueOn(); voxelIter; ++voxelIter) {
+                            const Index voxelIdx = voxelIter.pos();
+                            const Coord ijk = LeafT::offsetToLocalCoord(voxelIdx);
+                            const int64_t key = leafKey + hash(ijk);
+                            if (key == voxelSliceKey) {
+                                nodeMask->setOn(voxelIdx);
+                            }
+                        }
+                    }
+                }
+            }
+        );
+    }
+
+    // Private struct for nearest neighbor grid points (very memory light!)
+    struct NN {
+        ValueT v;
+        int    n;
+        inline static Coord ijk(const Coord &p, int i) { return p + FastSweeping::mOffset[i]; }
+        NN() : v(), n() {}
+        NN(const AccT &a, const Coord &p, int i) : v(math::Abs(a.getValue(ijk(p,i)))), n(i) {}
+        inline Coord operator()(const Coord &p) const { return ijk(p, n); }
+        inline bool operator<(const NN &rhs) const { return v < rhs.v; }
+        inline operator bool() const { return v < ValueT(1000); }
+    };
+
+    void sweep()
+    {
+        TreeT* tree2 = mParent->mGrid2 ? &mParent->mGrid2->tree() : nullptr;
+
+        const ValueT h = static_cast<ValueT>(mParent->mGrid1->voxelSize()[0]);
+        const ValueT sqrt2h = math::Sqrt(ValueT(2))*h;
+
+        const std::vector<Coord>& leafNodeOrigins = mParent->mSweepMaskLeafOrigins;
+
+        int64_t voxelSliceIndex(0);
+
+        auto sweepOp = [&](const tbb::blocked_range<size_t>& range)
+        {
+            using LeafT = typename GridT::TreeType::LeafNodeType;
+
+            AccT acc1(mParent->mGrid1->tree());
+            auto acc2 = std::unique_ptr<AccT>(tree2 ? new AccT(*tree2) : nullptr);
+            ValueT absV, sign, update, D;
+            NN d1, d2, d3;//distance values and coordinates of closest neighbor points
+
+            const LeafSliceArray& leafSliceArray = mVoxelSliceMap[voxelSliceIndex];
+
+            // Solves Goudonov's scheme: [x-d1]^2 + [x-d2]^2  + [x-d3]^2 = h^2
+            // where [X] = (X>0?X:0) and ai=min(di+1,di-1)
+            for (size_t i = range.begin(); i < range.end(); ++i) {
+
+                // iterate over all leafs in the slice and extract the leaf
+                // and node mask for each slice pattern
+
+                const LeafSlice& leafSlice = leafSliceArray[i];
+                const size_t leafIdx = leafSlice.first;
+                const NodeMaskPtrT& nodeMask = leafSlice.second;
+
+                const Coord& origin = leafNodeOrigins[leafIdx];
+
+                Coord ijk;
+                for (auto indexIter = nodeMask->beginOn(); indexIter; ++indexIter) {
+
+                    // Get coordinate of center point of the FD stencil
+                    ijk = origin + LeafT::offsetToLocalCoord(indexIter.pos());
+
+                    // Find the closes neighbors in the three axial directions
+                    d1 = std::min(NN(acc1, ijk, 0), NN(acc1, ijk, 1));
+                    d2 = std::min(NN(acc1, ijk, 2), NN(acc1, ijk, 3));
+                    d3 = std::min(NN(acc1, ijk, 4), NN(acc1, ijk, 5));
+
+                    if (!(d1 || d2 || d3)) continue;//no valid neighbors
+
+                    // Get the center point of the FD stencil (assumed to be an active voxel)
+                    // Note this const_cast is normally unsafe but by design we know the tree
+                    // to be static, of floating-point type and containing active voxels only!
+                    ValueT &value = const_cast<ValueT&>(acc1.getValue(ijk));
+
+                    // Extract the sign
+                    sign = value >= ValueT(0) ? ValueT(1) : ValueT(-1);
+
+                    // Absolute value
+                    absV = math::Abs(value);
+
+                    // sort values so d1 <= d2 <= d3
+                    if (d2 < d1) std::swap(d1, d2);
+                    if (d3 < d2) std::swap(d2, d3);
+                    if (d2 < d1) std::swap(d1, d2);
+
+                    // Test if there is a solution depending on ONE of the neighboring voxels
+                    // if d2 - d1 >= h  => d2 >= d1 + h  then:
+                    // (x-d1)^2=h^2 => x = d1 + h
+                    update = d1.v + h;
+                    if (update <= d2.v) {
+                        if (update < absV) {
+                          value = sign * update;
+                          if (acc2) acc2->setValue(ijk, acc2->getValue(d1(ijk)));//update ext?
+                        }//update sdf?
+                        continue;
+                    }// one neighbor case
+
+                    // Test if there is a solution depending on TWO of the neighboring voxels
+                    // (x-d1)^2 + (x-d2)^2 = h^2
+                    //D = ValueT(2) * h * h - math::Pow2(d1.v - d2.v);// = 2h^2-(d1-d2)^2
+                    //if (D >= ValueT(0)) {// non-negative discriminant
+                    if (d2.v <= sqrt2h + d1.v) {
+                        D = ValueT(2) * h * h - math::Pow2(d1.v - d2.v);// = 2h^2-(d1-d2)^2
+                        update = ValueT(0.5) * (d1.v + d2.v + std::sqrt(D));
+                        if (update > d2.v && update <= d3.v) {
+                            if (update < absV) {
+                              value = sign * update;
+                              if (acc2) {
+                                d1.v -= update; d2.v -= update;
+                                acc2->setValue(ijk, (acc2->getValue(d1(ijk))*d1.v +
+                                                     acc2->getValue(d2(ijk))*d2.v)/(d1.v+d2.v));
+                              }//update ext?
+                            }//update sdf?
+                            continue;
+                        }//test for two neighbor case
+                    }//test for non-negative determinant
+
+                    // Test if there is a solution depending on THREE of the neighboring voxels
+                    // (x-d1)^2 + (x-d2)^2  + (x-d3)^2 = h^2
+                    // 3x^2 - 2(d1 + d2 + d3)x + d1^2 + d2^2 + d3^2 = h^2
+                    // ax^2 + bx + c=0, a=3, b=-2(d1+d2+d3), c=d1^2 + d2^2 + d3^2 - h^2
+                    const ValueT d123 = d1.v + d2.v + d3.v;
+                    D = d123*d123 - ValueT(3)*(d1.v*d1.v + d2.v*d2.v + d3.v*d3.v - h * h);
+                    if (D >= ValueT(0)) {// non-negative discriminant
+                        update = ValueT(1.0/3.0) * (d123 + std::sqrt(D));//always passes test
+                        //if (update > d3.v) {//disabled due to round-off errors
+                        if (update < absV) {
+                          value = sign * update;
+                          if (acc2) {
+                            d1.v -= update; d2.v -= update; d3.v -= update;
+                            acc2->setValue(ijk, (acc2->getValue(d1(ijk))*d1.v +
+                                                 acc2->getValue(d2(ijk))*d2.v +
+                                                 acc2->getValue(d3(ijk))*d3.v)/(d1.v+d2.v+d3.v));
+                          }//update ext?
+                        }//update sdf?
+                    }//test for non-negative determinant
+                }//loop over coordinates
+            }
         };
 
-#if 1
 #ifdef BENCHMARK_FAST_SWEEPING
-        timer.restart("Forward  sweep");
+        util::CpuTimer timer("Forward  sweep");
 #endif
-        for (size_t i = 1; i < planes.size(); ++i) tbb::parallel_for(range(i), *this);
+
+        for (size_t i = 0; i < mVoxelSliceKeys.size(); i++) {
+            voxelSliceIndex = mVoxelSliceKeys[i];
+            tbb::parallel_for(tbb::blocked_range<size_t>(0, mVoxelSliceMap[voxelSliceIndex].size()), sweepOp);
+        }
+
 #ifdef BENCHMARK_FAST_SWEEPING
         timer.restart("Backward sweeps");
 #endif
-        for (size_t i = planes.size()-1; i>0; --i) tbb::parallel_for(range(i), *this);
-#else
-#ifdef BENCHMARK_FAST_SWEEPING
-        timer.restart("Forward and backward sweeps");
-#endif
-        tbb::parallel_invoke([&](){for (size_t i = 1; i < planes.size(); ++i) tbb::parallel_for(range(i), *this);},
-                             [&](){for (size_t i = planes.size()-1; i>0; --i) tbb::parallel_for(range(i), *this);});
-#endif
+        for (size_t i = mVoxelSliceKeys.size(); i > 0; i--) {
+            voxelSliceIndex = mVoxelSliceKeys[i-1];
+            tbb::parallel_for(tbb::blocked_range<size_t>(0, mVoxelSliceMap[voxelSliceIndex].size()), sweepOp);
+        }
+
 #ifdef BENCHMARK_FAST_SWEEPING
         timer.stop();
 #endif
     }
-    template<typename HashOp, typename ArrayType>
-    void buildPlanes(HashOp &hash, ArrayType &planes)
-    {
-        using BufferT = typename ArrayType::ValueBuffer;
-        using PoolT = tbb::enumerable_thread_specific<BufferT>;
-        BufferT exemplar(planes);//dummy used for initialization
-        PoolT pool(exemplar);//thread local storage pool of ValueBuffers
-        auto func = [&](const tbb::blocked_range<size_t>& r) {
-            Coord *p = mParent->mCoords.get();
-            typename PoolT::reference b = pool.local();
-            for (size_t i=r.begin(); i!=r.end(); ++i) if (hash(p[i-1])!=hash(p[i])) b.push_back(i);
-        };
-        planes.push_back(0);
-        tbb::parallel_for(tbb::blocked_range<size_t>(1, mParent->voxelCount(), 1<<12), func);// 4096
-        for (auto iter=pool.begin(); iter!=pool.end(); ++iter) iter->flush();
-        planes.push_back(mParent->voxelCount());
-        planes.sort();
-    }
-    /// @brief Locally solves @f$|\nabla \phi|^2 = 1 @f$ by means
-    /// of Godunov's upwind finite difference scheme
 
-    // Private struct for nearest neighbor grid points (very memory light!)
-    struct NN {
-      ValueT v;
-      int    n;
-      inline static Coord ijk(const Coord &p, int i) { return p + FastSweeping::mOffset[i]; }
-      NN() : v(), n() {}
-      NN(const AccT &a, const Coord &p, int i) : v(math::Abs(a.getValue(ijk(p,i)))), n(i) {}
-      inline Coord operator()(const Coord &p) const { return ijk(p, n); }
-      inline bool operator<(const NN &rhs) const { return v < rhs.v; }
-      inline operator bool() const { return v < ValueT(1000); }
-    };
-
-    void operator()(const tbb::blocked_range<size_t>& range) const
-    {
-      auto acc2 = std::unique_ptr<AccT>(mTree2 ? new AccT(*mTree2) : nullptr);
-      const ValueT h = mVoxelSize, sqrt2h = math::Sqrt(ValueT(2))*h;
-      ValueT absV, sign, update, D;
-      NN d1, d2, d3;//distance values and coordinates of closest neighbor points
-      Coord *coords = mParent->mCoords.get();
-
-      // Solves Goudonov's scheme: [x-d1]^2 + [x-d2]^2  + [x-d3]^2 = h^2
-      // where [X] = (X>0?X:0) and ai=min(di+1,di-1)
-      for (size_t i=range.begin(); i!=range.end(); ++i) {
-
-        // Get coordinate of center point of the FD stencil
-        const Coord &ijk = coords[i];
-
-        // Find the closes neighbors in the three axial directions
-        d1 = std::min(NN(mAcc1, ijk, 0), NN(mAcc1, ijk, 1));
-        d2 = std::min(NN(mAcc1, ijk, 2), NN(mAcc1, ijk, 3));
-        d3 = std::min(NN(mAcc1, ijk, 4), NN(mAcc1, ijk, 5));
-
-        if (!(d1 || d2 || d3)) continue;//no valid neighbors
-
-        // Get the center point of the FD stencil (assumed to be an active voxel)
-        // Note this const_cast is normally unsafe but by design we know the tree
-        // to be static, of floating-point type and containing active voxels only!
-        ValueT &value = const_cast<ValueT&>(mAcc1.getValue(ijk));
-
-        // Extract the sign
-        sign = value >= ValueT(0) ? ValueT(1) : ValueT(-1);
-
-        // Absolute value
-        absV = math::Abs(value);
-
-        // sort values so d1 <= d2 <= d3
-        if (d2 < d1) std::swap(d1, d2);
-        if (d3 < d2) std::swap(d2, d3);
-        if (d2 < d1) std::swap(d1, d2);
-
-        // Test if there is a solution depending on ONE of the neighboring voxels
-        // if d2 - d1 >= h  => d2 >= d1 + h  then:
-        // (x-d1)^2=h^2 => x = d1 + h
-        update = d1.v + h;
-        if (update <= d2.v) {
-            if (update < absV) {
-              value = sign * update;
-              if (acc2) acc2->setValue(ijk, acc2->getValue(d1(ijk)));//update ext?
-            }//update sdf?
-            continue;
-        }// one neighbor case
-
-        // Test if there is a solution depending on TWO of the neighboring voxels
-        // (x-d1)^2 + (x-d2)^2 = h^2
-        //D = ValueT(2) * h * h - math::Pow2(d1.v - d2.v);// = 2h^2-(d1-d2)^2
-        //if (D >= ValueT(0)) {// non-negative discriminant
-        if (d2.v <= sqrt2h + d1.v) {
-            D = ValueT(2) * h * h - math::Pow2(d1.v - d2.v);// = 2h^2-(d1-d2)^2
-            update = ValueT(0.5) * (d1.v + d2.v + std::sqrt(D));
-            if (update > d2.v && update <= d3.v) {
-                if (update < absV) {
-                  value = sign * update;
-                  if (acc2) {
-                    d1.v -= update; d2.v -= update;
-                    acc2->setValue(ijk, (acc2->getValue(d1(ijk))*d1.v +
-                                         acc2->getValue(d2(ijk))*d2.v)/(d1.v+d2.v));
-                  }//update ext?
-                }//update sdf?
-                continue;
-            }//test for two neighbor case
-        }//test for non-negative determinant
-
-        // Test if there is a solution depending on THREE of the neighboring voxels
-        // (x-d1)^2 + (x-d2)^2  + (x-d3)^2 = h^2
-        // 3x^2 - 2(d1 + d2 + d3)x + d1^2 + d2^2 + d3^2 = h^2
-        // ax^2 + bx + c=0, a=3, b=-2(d1+d2+d3), c=d1^2 + d2^2 + d3^2 - h^2
-        const ValueT d123 = d1.v + d2.v + d3.v;
-        D = d123*d123 - ValueT(3)*(d1.v*d1.v + d2.v*d2.v + d3.v*d3.v - h * h);
-        if (D >= ValueT(0)) {// non-negative discriminant
-            update = ValueT(1.0/3.0) * (d123 + std::sqrt(D));//always passes test
-            //if (update > d3.v) {//disabled due to round-off errors
-            if (update < absV) {
-              value = sign * update;
-              if (acc2) {
-                d1.v -= update; d2.v -= update; d3.v -= update;
-                acc2->setValue(ijk, (acc2->getValue(d1(ijk))*d1.v +
-                                     acc2->getValue(d2(ijk))*d2.v +
-                                     acc2->getValue(d3(ijk))*d3.v)/(d1.v+d2.v+d3.v));
-              }//update ext?
-            }//update sdf?
-        }//test for non-negative determinant
-      }//loop over coordinates
-    }// SweepingKernel::operator()
+private:
+    using NodeMaskT = typename SweepMaskTreeT::LeafNodeType::NodeMaskType;
+    using NodeMaskPtrT = std::unique_ptr<NodeMaskT>;
+    // using a unique ptr for the NodeMask allows for parallel allocation,
+    // but makes this class not copy-constructible
+    using LeafSlice = std::pair</*leafIdx=*/size_t, /*leafMask=*/NodeMaskPtrT>;
+    using LeafSliceArray = std::deque<LeafSlice>;
+    using VoxelSliceMap = std::map</*voxelSliceKey=*/int64_t, LeafSliceArray>;
 
     // Private member data of SweepingKernel
     FastSweeping *mParent;
-    AccT   mAcc1;
-    TreeT *mTree2;//raw pointers, i.e. lock free
-    const ValueT mVoxelSize;
+    VoxelSliceMap mVoxelSliceMap;
+    std::vector<int64_t> mVoxelSliceKeys;
+
 };// SweepingKernel
 
 ////////////////////////////////////////////////////////////////////////////////
