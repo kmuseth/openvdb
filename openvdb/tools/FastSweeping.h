@@ -288,7 +288,7 @@ dilateSdf(const GridT &sdfGrid,
           NearestNeighbors nn = NN_FACE,
           int nIter = 1);
 
-/// @brief Expand an existing signed distance fild into a mask
+/// @brief Fills mask by extending an existing signed distance field into it.
 ///
 /// @return A shared pointer to the masked signed distance field.
 ///
@@ -372,16 +372,16 @@ public:
     typename GridT::Ptr sdfGrid() { return mGrid1; }
     typename GridT::Ptr extGrid() { return mGrid2; }
 
-    void initSdf(const GridT &fogGrid, ValueT isoValue, bool isInputSdf);
+    bool initSdf(const GridT &fogGrid, ValueT isoValue, bool isInputSdf);
 
     template <typename OpT>
-    void initExt(const GridT &fogGrid, const OpT &op, ValueT isoValue, bool isInputSdf);
+    bool initExt(const GridT &fogGrid, const OpT &op, ValueT isoValue, bool isInputSdf);
 
     // use tools::NN_FACE_EDGE for improved dilation
-    void initDilate(const GridT &sdfGrid, int dilation, NearestNeighbors nn = NN_FACE);
+    bool initDilate(const GridT &sdfGrid, int dilation, NearestNeighbors nn = NN_FACE);
 
     template<typename MaskTreeT>
-    void initMask(const GridT &sdfGrid, const Grid<MaskTreeT> &mask, bool ignoreActiveTiles = false);
+    bool initMask(const GridT &sdfGrid, const Grid<MaskTreeT> &mask, bool ignoreActiveTiles = false);
 
     /// @brief Perform @a nIter iterations of the fast sweeping algorithm.
     void sweep(int nIter = 1, bool finalize = true);
@@ -393,6 +393,9 @@ public:
 
     /// @brief Return the number of voxels that defined the boundary condition.
     size_t boundaryCount() const { return mBoundaryCount; }
+
+    /// @brief Return true if there are voxels and boundaries to solve for
+    bool isValid() const { return this->voxelCount() > 0 && this->boundaryCount() > 0; }
 private:
 
     // Private classes to initialize the grid and construct
@@ -441,37 +444,40 @@ void FastSweeping<GridT>::clear()
 }
 
 template <typename GridT>
-void FastSweeping<GridT>::initSdf(const GridT &fogGrid, ValueT isoValue, bool isInputSdf)
+bool FastSweeping<GridT>::initSdf(const GridT &fogGrid, ValueT isoValue, bool isInputSdf)
 {
     this->clear();
     mGrid1 = fogGrid.deepCopy();//very fast
     InitSdf kernel(*this);
     kernel.run(isoValue, isInputSdf);
+    return this->isValid();
 }
 
 template <typename GridT>
 template <typename OpT>
-void FastSweeping<GridT>::initExt(const GridT &fogGrid, const OpT &op, ValueT isoValue, bool isInputSdf)
+bool FastSweeping<GridT>::initExt(const GridT &fogGrid, const OpT &op, ValueT isoValue, bool isInputSdf)
 {
     this->clear();
     mGrid1 = fogGrid.deepCopy();//very fast
     mGrid2 = fogGrid.deepCopy();//very fast
     InitExt<OpT> kernel(*this);
     kernel.run(isoValue, op, isInputSdf);
+    return this->isValid();
 }
 
 template <typename GridT>
-void FastSweeping<GridT>::initDilate(const GridT &sdfGrid, int dilate, NearestNeighbors nn)
+bool FastSweeping<GridT>::initDilate(const GridT &sdfGrid, int dilate, NearestNeighbors nn)
 {
     this->clear();
     mGrid1 = sdfGrid.deepCopy();//very fast
     DilateKernel kernel(*this);
     kernel.run(dilate, nn);
+    return this->isValid();
 }
 
 template <typename GridT>
 template<typename MaskTreeT>
-void FastSweeping<GridT>::initMask(const GridT &sdfGrid, const Grid<MaskTreeT> &mask, bool ignoreActiveTiles)
+bool FastSweeping<GridT>::initMask(const GridT &sdfGrid, const Grid<MaskTreeT> &mask, bool ignoreActiveTiles)
 {
     this->clear();
     mGrid1 = sdfGrid.deepCopy();//very fast
@@ -498,6 +504,7 @@ void FastSweeping<GridT>::initMask(const GridT &sdfGrid, const Grid<MaskTreeT> &
             kernel.run(tmp);//multi-threaded
         }
     }
+    return this->isValid();
 }// FastSweeping::initMaskSdf
 
 template <typename GridT>
@@ -807,6 +814,7 @@ struct FastSweeping<GridT>::InitExt
     InitExt& operator=(const InitExt&) = delete;
     void run(ValueT isoValue, const OpT &opPrototype, bool isInputSdf)
     {
+        static_assert(std::is_same<ValueT, decltype(opPrototype(Vec3d(0)))>::value, "Invalid return type of functor");
         if (mGrid2 == nullptr) {
           OPENVDB_THROW(RuntimeError, "FastSweeping::InitExt expected an extension grid!");
         }
@@ -1060,17 +1068,17 @@ struct FastSweeping<GridT>::SweepingKernel
         timer.restart("Alternative init");
 #endif
         assert( mParent->mPagedArray.size() < static_cast<size_t>(std::numeric_limits<uint32_t>::max()) );
-        const uint32_t count = mParent->mPagedArray.size();
-        auto tmp = std::make_unique<uint32_t[]>(count);
-
-        tbb::parallel_for(tbb::blocked_range<uint32_t>(0, count, 64),
-                          [&](const tbb::blocked_range<uint32_t>& r){auto *p=&tmp[r.begin()]; for (uint32_t i = r.begin(); i < r.end(); ++i) *p++=i;});
+        
+        //const uint32_t count = mParent->mPagedArray.size();
+        //auto tmp = std::make_unique<uint32_t[]>(count);
+        //tbb::parallel_for(tbb::blocked_range<uint32_t>(0, count, 64),
+        //                  [&](const tbb::blocked_range<uint32_t>& r){auto *p=&tmp[r.begin()]; for (uint32_t i = r.begin(); i < r.end(); ++i) *p++=i;});
         //if (tmp[134] != 134) std::cerr << "ERROR" << std::endl;
-        auto hashComp2 = [&](uint32_t a, uint32_t b){return hash(coords[a]) < hash(coords[b]);};
+        //auto hashComp2 = [&](uint32_t a, uint32_t b){return hash(coords[a]) < hash(coords[b]);};
 #ifdef BENCHMARK_FAST_SWEEPING
         timer.restart("Alternative sort");
 #endif
-        tbb::parallel_sort(&tmp[0], &tmp[0] + mParent->voxelCount(), hashComp2);
+        //tbb::parallel_sort(&tmp[0], &tmp[0] + mParent->voxelCount(), hashComp2);
 
 #ifdef BENCHMARK_FAST_SWEEPING
         timer.restart("Sorting by sweep plane");
@@ -1329,8 +1337,11 @@ fogToSdf(const GridT &fogGrid,
          int nIter)
 {
     FastSweeping<GridT> fs;
-    fs.initSdf(fogGrid, isoValue, /*isInputSdf*/false);
-    fs.sweep(nIter);
+    if (fs.initSdf(fogGrid, isoValue, /*isInputSdf*/false)) {
+      fs.sweep(nIter);
+    } else {
+      return typename GridT::Ptr(nullptr);
+    }
     return fs.sdfGrid();
 }
 

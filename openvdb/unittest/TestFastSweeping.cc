@@ -38,7 +38,7 @@ public:
     CPPUNIT_TEST_SUITE(TestFastSweeping);
     CPPUNIT_TEST(dilateSignedDistance);
     CPPUNIT_TEST(testMaskSdf);
-    CPPUNIT_TEST(testFogToSdf);
+    CPPUNIT_TEST(testSdfToFog);
     CPPUNIT_TEST(testIntersection);
     CPPUNIT_TEST(velocityExtensionOfFogSphere);
     CPPUNIT_TEST(velocityExtensionOfSdfSphere);
@@ -52,7 +52,7 @@ public:
 
     void dilateSignedDistance();
     void testMaskSdf();
-    void testFogToSdf();
+    void testSdfToFog();
     void testIntersection();
     void velocityExtensionOfFogSphere();
     void velocityExtensionOfSdfSphere();
@@ -321,7 +321,7 @@ TestFastSweeping::testMaskSdf()
 }// testMaskSdf
 
 void
-TestFastSweeping::testFogToSdf()
+TestFastSweeping::testSdfToFog()
 {
     using namespace openvdb;
     // Define parameterS FOR the level set sphere to be re-normalized
@@ -375,7 +375,7 @@ TestFastSweeping::testFogToSdf()
         //std::cerr << "Total active voxel count = " << grid2->activeVoxelCount() << std::endl;
         CPPUNIT_ASSERT(percent < 3.0);
     }
-}// testFogToSdf
+}// testSdfToFog
 
 
 #ifdef BENCHMARK_FAST_SWEEPING
@@ -522,7 +522,7 @@ TestFastSweeping::velocityExtensionOfFogSphere()
 
   //tools::fogToSdf(*grid, isoValue);
   auto op = [radius](const Vec3R &xyz) {
-    return math::Sin(2*3.14*xyz[0]/radius);
+    return float(math::Sin(2*3.14*xyz[0]/radius));
     //return xyz[0]>0 ? 0.5f : -0.5f;
   };
   auto grids = tools::fogToSdfAndExt(*grid, op, isoValue);
@@ -551,7 +551,7 @@ TestFastSweeping::velocityExtensionOfSdfSphere()
   writeFile("/tmp/sphere2_sdf_in.vdb", grid);
 
   auto op = [radius](const Vec3R &xyz) {
-    return math::Sin(2*3.14*xyz[0]/radius);
+    return float(math::Sin(2*3.14*xyz[0]/radius));
     //return xyz[0]>0 ? 0.5f : -0.5f;
   };
   auto grids = tools::sdfToSdfAndExt(*grid, op, isoValue);
