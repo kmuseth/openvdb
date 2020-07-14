@@ -1068,7 +1068,7 @@ struct FastSweeping<GridT>::SweepingKernel
         timer.restart("Alternative init");
 #endif
         assert( mParent->mPagedArray.size() < static_cast<size_t>(std::numeric_limits<uint32_t>::max()) );
-        
+
         //const uint32_t count = mParent->mPagedArray.size();
         //auto tmp = std::make_unique<uint32_t[]>(count);
         //tbb::parallel_for(tbb::blocked_range<uint32_t>(0, count, 64),
