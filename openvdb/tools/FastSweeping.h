@@ -1139,81 +1139,7 @@ struct FastSweeping<GridT>::SweepingKernel
     }
     /// @brief Locally solves @f$|\nabla \phi|^2 = 1 @f$ by means
     /// of Godunov's upwind finite difference scheme
-#if 0
-    void operator()(const tbb::blocked_range<size_t>& range) const
-    {
-        static const ValueT Unknown = std::numeric_limits<ValueT>::max();
-        typename GridT::Accessor acc(mParent->mGrid1->tree());
-        const ValueT h = static_cast<ValueT>(mParent->mGrid1->voxelSize()[0]), h2 = h * h;
-        ValueT absValue, sign, a1, a2, a3, update, D;
-        Coord *coords = mParent->mCoords.get();
 
-        // Solves Goudonov's scheme: [x-a1]^2 + [x-a2]^2  + [x-a3]^2 = h^2
-        // where [X] = (X>0?X:0) and ai=min(ai+1,ai-1)
-        for (size_t i=range.begin(); i!=range.end(); ++i) {
-
-            // Get coordinate of center point of the FD stencil
-            const Coord &xyz = coords[i];
-
-            // Get the center point of the FD stencil (assumed to be an active voxel)
-            // Note this const_cast is normally unsafe but by design we know the tree
-            // to be static, of floating-point type and containing active voxels only!
-            ValueT &value = const_cast<ValueT&>(acc.getValue(xyz));
-
-            // Extract the sign
-            sign = value >= ValueT(0) ? ValueT(1) : ValueT(-1);
-
-            // Absolute value
-            absValue = math::Abs(value);
-
-            // Find the closes neighbors in the three axial directions
-            a1 = std::min(math::Abs(acc.getValue(xyz.offsetBy(-1, 0, 0))),
-                          math::Abs(acc.getValue(xyz.offsetBy( 1, 0, 0))));
-            a2 = std::min(math::Abs(acc.getValue(xyz.offsetBy( 0,-1, 0))),
-                          math::Abs(acc.getValue(xyz.offsetBy( 0, 1, 0))));
-            a3 = std::min(math::Abs(acc.getValue(xyz.offsetBy( 0, 0,-1))),
-                          math::Abs(acc.getValue(xyz.offsetBy( 0, 0, 1))));
-
-            // sort values so a1 <= a2 <= a3
-            if (a1 > a2) std::swap(a1, a2);
-            if (a2 > a3) std::swap(a2, a3);
-            if (a1 > a2) std::swap(a1, a2);
-
-            if (math::isExactlyEqual(a1, Unknown)) continue;//no valid neighbors
-
-            // Test if there is a solution depending on ONE of the neighboring voxels
-            // if a2 - a1 >= h  => a2 >= a1 + h  then:
-            // (x-a1)^2=h^2 => x = h + a1
-            update = a1 + h;
-            if (update <= a2) {
-                value = sign * math::Min(update, absValue);
-                continue;
-            }
-
-            // Test if there is a solution depending on TWO of the neighboring voxels
-            // (x-a1)^2 + (x-a2)^2 = h^2
-            D = ValueT(2) * h2 - math::Pow2(a1-a2);// = 2h^2-(a1-a2)^2
-            if (D >= ValueT(0)) {// non-negative discriminant
-                update = ValueT(0.5) * (a1 + a2 + std::sqrt(D));
-                if (update > a2 && update <= a3) {
-                    value = sign * math::Min(update, absValue);
-                    continue;
-                }
-            }
-
-            // Test if there is a solution depending on THREE of the neighboring voxels
-            // (x-a1)^2 + (x-a2)^2  + (x-a3)^2 = h^2
-            // 3x^2 - 2(a1 + a2 + a3)x + a1^2 + a2^2 + a3^2 = h^2
-            // ax^2 + bx + c=0, a=3, b=-2(a1+a2+a3), c=a1^2 + a2^2 + a3^2 - h^2
-            const ValueT a123 = a1 + a2 + a3;
-            D = a123*a123 - ValueT(3)*(a1*a1 + a2*a2 + a3*a3 - h2);
-            if (D >= ValueT(0)) {// non-negative discriminant
-                update = ValueT(1.0/3.0) * (a123 + std::sqrt(D));
-                value = sign * math::Min(update, absValue);
-            }
-        }//loop over coordinates
-    }// SweepingKernel::operator()
-#else
     // Private struct for nearest neighbor grid points (very memory light!)
     struct NN {
       ValueT v;
@@ -1225,11 +1151,9 @@ struct FastSweeping<GridT>::SweepingKernel
       inline bool operator<(const NN &rhs) const { return v < rhs.v; }
       inline operator bool() const { return v < ValueT(1000); }
     };
+
     void operator()(const tbb::blocked_range<size_t>& range) const
     {
-      //static const ValueT Unknown = std::numeric_limits<ValueT>::max();
-      //AccT acc1(*mTree1);
-      //AccT *acc2 = mTree2 ? new AccT(*mTree2) : nullptr;
       auto acc2 = std::unique_ptr<AccT>(mTree2 ? new AccT(*mTree2) : nullptr);
       const ValueT h = mVoxelSize, sqrt2h = math::Sqrt(ValueT(2))*h;
       ValueT absV, sign, update, D;
@@ -1317,10 +1241,9 @@ struct FastSweeping<GridT>::SweepingKernel
               }//update ext?
             }//update sdf?
         }//test for non-negative determinant
-    }//loop over coordinates
-    //delete acc2;
-}// SweepingKernel::operator()
-#endif
+      }//loop over coordinates
+    }// SweepingKernel::operator()
+
     // Private member data of SweepingKernel
     FastSweeping *mParent;
     AccT   mAcc1;
