@@ -792,7 +792,7 @@ struct FastSweeping<GridT>::InitSdf
     StencilPoolT *mStencilPool;
     GridT        *mGrid1;//raw pointer, i.e. lock free
     ValueT        mIsoValue;
-    int           mAboveSign;//sign of distance values above the iso-value
+    ValueT        mAboveSign;//sign of distance values above the iso-value
 };// InitSdf
 
 /// Private class of FastSweeping to perform multi-threaded initialization
@@ -819,7 +819,7 @@ struct FastSweeping<GridT>::InitExt
           OPENVDB_THROW(RuntimeError, "FastSweeping::InitExt expected an extension grid!");
         }
 
-        mAboveSign  = isInputSdf ? 1 : -1;
+        mAboveSign  = isInputSdf ? 1.0f : -1.0f;
         mIsoValue = isoValue;
         TreeT &tree1 = mGrid1->tree(), &tree2 = mGrid2->tree();
         const bool hasActiveTiles = tree1.hasActiveTiles();//very fast
