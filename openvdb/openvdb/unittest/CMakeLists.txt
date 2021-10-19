@@ -132,6 +132,7 @@ else()
     TestNodeManager.cc
     TestNodeMask.cc
     TestNodeVisitor.cc
+    TestOffsetGrid.cc
     TestParticleAtlas.cc
     TestParticlesToLevelSet.cc
     TestPointAdvect.cc
