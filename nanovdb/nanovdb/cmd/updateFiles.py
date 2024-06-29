@@ -11,12 +11,31 @@ def open_file(file_path):
             The content of the file in an arbitrary format.
     """
     try:
-        with open(file_path, "r", encoding="utf-8", errors="replace") as file:
+        with open(file_path, 'r', encoding='utf-8', errors='replace') as file:
             return file.read()
     except UnicodeDecodeError:
         # If utf-8 decoding fails, try windows-1252.
-        with open(file_path, "r", encoding="windows-1252", errors="replace") as file:
+        with open(file_path, 'r', encoding='windows-1252', errors='replace') as file:
             return file.read()
+
+
+def write_file(file_path, content):
+    """
+        Writes a file.
+
+        Args:
+            file_path: Path of the file to open.
+
+        Returns:
+            The content of the file in an arbitrary format.
+    """
+    try:
+        with open(file_path, 'w', encoding='utf-8', errors='replace') as file:
+            return file.write(content)
+    except UnicodeDecodeError:
+        # If utf-8 decoding fails, try windows-1252.
+        with open(file_path, 'w', encoding='windows-1252', errors='replace') as file:
+            return file.write(content)
 
 def update_files():
     """
@@ -116,8 +135,7 @@ def update_files():
                     new_path = '<nanovdb/' + val + '>'
                     content = content.replace(old_path, new_path)
 
-                with open(file_path, 'w') as file:
-                    file.write(content)
+                write_file(file_path, content)
 
 if __name__ == "__main__":
     update_files()
