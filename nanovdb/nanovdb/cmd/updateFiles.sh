@@ -69,7 +69,6 @@ for file in $(find "$dir" -name '*.h' -or -name '*.cuh' -or -name '*.cc' -or -na
     func2 $file util GpuTimer "cuda::Timer"
     func2 $file util CountOn countOn
     func3 $file "util/GridHandle.h" "GridHandle.h"
-    func3 $file "util/GridHandle.h" "HostBuffer.h"
     func3 $file "util/BuildGrid.h"   "tools/GridBuilder.h"
     func3 $file "util/GridBuilder.h" "tools/GridBuilder.h"
     func3 $file "util/IO.h" "io/IO.h"
