@@ -163,7 +163,7 @@ def update_files(dir_path):
         "util/cuda/CudaGridStats.cuh": "tools/cuda/CudaGridStats.cuh",
         "util/cuda/CudaGridValidator.cuh": "tools/cuda/CudaGridValidator.cuh",
         "util/cuda/CudaIndexToGrid.cuh": "tools/cuda/CudaIndexToGrid.cuh",
-        "util/cuda/CudaPointsToGrid.cuh": "tools/GridChecksum.cuh",
+        "util/cuda/CudaPointsToGrid.cuh": "tools/cuda/PointsToGrid.cuh",
         "util/cuda/CudaSignedFloodFill.cuh": "tools/cuda/CudaSignedFloodFill.cuh",
         "util/cuda/CudaDeviceBuffer.h": "cuda/DeviceBuffer.h",
         "util/cuda/CudaGridHandle.cuh": "cuda/GridHandle.cuh",
