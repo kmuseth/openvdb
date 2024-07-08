@@ -47,7 +47,7 @@ def update_files(dir_path):
     include directories.
 
     Args:
-        None.
+        Directory path: will include files in downstream directories.
 
     Returns:
         None. Writes the contents of the file.
@@ -199,7 +199,11 @@ def update_files(dir_path):
 
                 write_file(file_path, content)
 
-
+# Example use:
+# To update all the files using NanoVDB in the current directory (and directories downstream):
+# python ./nanovdb/nanovdb/cmd/updateFiles.py
+# To update all the files using NanoVDB in a directory called foo (and directories downstream):
+# python ./nanovdb/nanovdb/cmd/updateFiles.py -d /path/to/foo
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Synthetic Data Generation for USD")
     parser.add_argument(
