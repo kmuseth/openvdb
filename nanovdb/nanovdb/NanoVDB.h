@@ -158,13 +158,11 @@
 // Use this to switch between std::ofstream or FILE implementations
 //#define NANOVDB_USE_IOSTREAMS
 
-// Fix the caching bug in the ReadAccessor. Enabled by default; define
-// NANOVDB_NO_OLD_ACCESSOR (e.g. via CMake) to turn it off.
-#if !defined(NANOVDB_USE_OLD_ACCESSOR) && !defined(NANOVDB_NO_OLD_ACCESSOR)
-#define NANOVDB_USE_OLD_ACCESSOR
-#endif
+// Define NANOVDB_USE_OLD_ACCESSOR before including this header to temporarily
+// restore legacy ReadAccessor behavior where value lookups fall back to root
+// after a leaf-cache miss.
 
-// Uncomment to use (slower) branched version of LeafData<FpN,...>::getValue
+// Comment out to use (slower) branched version of LeafData<FpN,...>::getValue
 #define NANOVDB_FPN_BRANCHLESS
 
 #if !defined(NANOVDB_ALIGN)
@@ -5415,6 +5413,9 @@ public:
         if constexpr(OpT::LEVEL <= 0) {
             if (this->isCached<LeafT>(dirty)) return ((LeafT*)mNode[0])->template setAndCache<OpT>(ijk, *this, args...);
         }
+#ifdef NANOVDB_USE_OLD_ACCESSOR
+        else
+#endif
         if constexpr(OpT::LEVEL <= 1) {
             if (this->isCached<NodeT1>(dirty)) return ((NodeT1*)mNode[1])->template setAndCache<OpT>(ijk, *this, args...);
         }
