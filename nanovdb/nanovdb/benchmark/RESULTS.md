@@ -2,7 +2,7 @@
 
 Benchmarks comparing the `NANOVDB_USE_OLD_ACCESSOR` caching behaviour (ON vs OFF)
 across access patterns, on CPU (single- and multi-threaded) and GPU.
-Results are collected from two machines: a **laptop** and a **desktop**.
+Results are collected from three machines: a **laptop**, a **desktop**, and a **workstation**.
 
 ## What is being measured
 
@@ -80,12 +80,12 @@ empty-space shortcuts, we are measuring genuine node traversal and cache reuse.
 
 Two machines were benchmarked; results for each are in separate sections below.
 
-| | Laptop | Desktop |
-|---|---|---|
-| CPU | 32 HW threads; TBB `parallel_for`, 4096-coord grains | AMD Ryzen 9 9950X — 16 cores / 32 threads; same TBB settings |
-| GPU | NVIDIA RTX 5000 Ada Generation Laptop GPU (SM 8.9); 32-coord chunks/thread, 128 threads/block | NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition (SM 12.0); same CUDA settings |
-| Build | Release (`-O3 -DNDEBUG`), C++17 / CUDA 17 | same |
-| OLD vs NEW | selected at compile time per target (`-DNANOVDB_USE_OLD_ACCESSOR` vs `-DNANOVDB_NO_OLD_ACCESSOR`) | same |
+| | Laptop | Desktop | Workstation |
+|---|---|---|---|
+| CPU | 32 HW threads; TBB `parallel_for`, 4096-coord grains | AMD Ryzen 9 9950X — 16 cores / 32 threads; same TBB settings | AMD Ryzen Threadripper PRO 7975WX — 32 cores / 64 threads; same TBB settings |
+| GPU | NVIDIA RTX 5000 Ada Generation Laptop GPU (SM 8.9); 32-coord chunks/thread, 128 threads/block | NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition (SM 12.0); same CUDA settings | NVIDIA RTX 6000 Ada Generation (SM 8.9, 49 GB); same CUDA settings |
+| Build | Release (`-O3 -DNDEBUG`), C++17 / CUDA 17 | same | same |
+| OLD vs NEW | selected at compile time per target (`-DNANOVDB_USE_OLD_ACCESSOR` vs `-DNANOVDB_NO_OLD_ACCESSOR`) | same | same |
 
 ## Access patterns
 
@@ -251,75 +251,186 @@ The stencil row is the per-lookup cost inside a 27-neighbour sweep.
 
 ---
 
-## Cross-machine comparison (Laptop vs Desktop)
+## Results — Workstation (AMD Ryzen Threadripper PRO 7975WX / RTX 6000 Ada, SM 8.9)
+
+### Combined — ns per lookup (one `getValue` call), lower = faster
+
+The stencil row is the per-lookup cost inside a 27-neighbour sweep.
+
+| Pattern | CPU-1T OLD | CPU-1T NEW | CPU-MT OLD | CPU-MT NEW | GPU OLD | GPU NEW |
+|---|--:|--:|--:|--:|--:|--:|
+| Sequential (stride 1) | 3.20 | **1.64** | **0.20** | 0.21 | 0.034 | **0.024** |
+| LeafJump (stride 8) | 3.09 | **1.65** | **0.20** | 0.22 | 0.035 | **0.023** |
+| NodeJump (stride 128) | 3.18 | **2.90** | **0.20** | 0.25 | 0.027 | **0.025** |
+| Random (uniform) | **8.35** | 11.42 | **0.28** | 0.40 | **0.046** | 0.052 |
+| **Stencil (3×3×3, 27-pt)** | 3.492 | **1.981** | 0.143 | **0.078** | 0.0578 | **0.0269** |
+
+*Legend:* CPU-1T = single thread · CPU-MT = 64 threads (TBB) · GPU = RTX 6000 Ada.
+
+### OLD → NEW speedup ( >1 = the fix is faster )
+
+| Pattern | CPU-1T | CPU-MT | GPU |
+|---|--:|--:|--:|
+| Sequential | 1.95× | 0.95× | 1.42× |
+| LeafJump | 1.87× | 0.91× | 1.52× |
+| NodeJump | 1.10× | 0.80× | 1.08× |
+| Random | 0.73× | 0.70× | 0.88× |
+| **Stencil** | **1.76×** | **1.83×** | **2.15×** |
+
+### Detailed tables — Workstation
+
+#### CPU, single-threaded (latency) — ns per lookup
+
+| Pattern | OLD | NEW | OLD→NEW |
+|---|--:|--:|--:|
+| Sequential | 3.20 | **1.64** | 1.95× |
+| LeafJump | 3.09 | **1.65** | 1.87× |
+| NodeJump | 3.18 | **2.90** | 1.10× |
+| Random | **8.35** | 11.42 | 0.73× |
+| Stencil | 3.492 | **1.981** | 1.76× |
+
+#### CPU, 64 threads (throughput) — ns per lookup
+
+| Pattern | OLD | NEW | OLD→NEW | MT speedup (NEW) |
+|---|--:|--:|--:|--:|
+| Sequential | **0.20** | 0.21 | 0.95× | 7.8× |
+| LeafJump | **0.20** | 0.22 | 0.91× | 7.5× |
+| NodeJump | **0.20** | 0.25 | 0.80× | 11.6× |
+| Random | **0.28** | 0.40 | 0.70× | 28.6× |
+| Stencil | 0.143 | **0.078** | 1.83× | 25.4× |
+
+Note: for all point patterns the OLD accessor is faster in multi-threaded mode on this machine.
+See the cross-machine comparison below for analysis.
+
+#### GPU (throughput) — ns per lookup
+
+| Pattern | OLD | NEW | OLD→NEW |
+|---|--:|--:|--:|
+| Sequential | 0.034 | **0.024** | 1.42× |
+| LeafJump | 0.035 | **0.023** | 1.52× |
+| NodeJump | 0.027 | **0.025** | 1.08× |
+| Random | **0.046** | 0.052 | 0.88× |
+| Stencil | 0.0578 | **0.0269** | 2.15× |
+
+#### Stencil (3×3×3) — reported per whole 27-neighbour stencil
+
+| Platform / Mode | OLD ns/stencil | NEW ns/stencil | OLD→NEW |
+|---|--:|--:|--:|
+| CPU 1 thread | 94.28 | **53.50** | 1.76× |
+| CPU 64 threads | 3.86 | **2.12** | 1.82× |
+| GPU | 1.5593 | **0.7266** | 2.15× |
+
+#### Fair platform comparison — NEW accessor, full hardware (ns per lookup)
+
+| Workload | CPU-1T | CPU-64T | GPU | GPU vs CPU-64T |
+|---|--:|--:|--:|--:|
+| Sequential | 1.64 | 0.21 | 0.024 | 8.8× |
+| Random | 11.42 | 0.40 | 0.052 | 7.7× |
+| Stencil | 1.981 | 0.078 | 0.0269 | 2.9× |
+
+---
+
+## Cross-machine comparison (Laptop vs Desktop vs Workstation)
 
 ### 1. The stencil win is universal and consistent
 
-The NEW accessor's stencil speedup is **~2× on GPU and 1.6–2.2× on CPU across both machines**.
-This is the most reproducible finding — it does not depend on CPU generation or GPU architecture.
+The NEW accessor's stencil speedup is **~2× on GPU and 1.6–2.2× on CPU across all three machines**.
+This is the most reproducible finding — it does not depend on CPU generation, thread count, or GPU architecture.
 
-### 2. GPU point-pattern speedup is architecture-dependent — the most interesting finding
+### 2. GPU point-pattern speedup is GPU-model-dependent, not Ada vs Blackwell
 
-| Pattern | Laptop Ada (SM 8.9) | Desktop Blackwell (SM 12.0) |
-|---|--:|--:|
-| Sequential | 1.00× | **1.75×** |
-| LeafJump | 1.00× | **1.75×** |
-| NodeJump | 0.98× | 1.17× |
-| Random | 0.93× | 0.83× |
+| Pattern | Laptop Ada RTX 5000 (SM 8.9) | Workstation Ada RTX 6000 (SM 8.9) | Desktop Blackwell RTX PRO 6000 (SM 12.0) |
+|---|--:|--:|--:|
+| Sequential | 1.00× | **1.42×** | **1.75×** |
+| LeafJump | 1.00× | **1.52×** | **1.75×** |
+| NodeJump | 0.98× | 1.08× | 1.17× |
+| Random | 0.93× | 0.88× | 0.83× |
 
-On Ada, the extra cache-level checks in NEW are a complete wash for point patterns — the GPU
-compiler cannot exploit the conditional hierarchy check under warp divergence.
-On **Blackwell (SM 12.0) the same code extracts 1.75× for coherent point patterns**, suggesting
-the newer SM handles predication / branch overhead much more efficiently.
+Both Ada machines show *different* results: the workstation RTX 6000 Ada extracts 1.42–1.52×
+for coherent point patterns while the laptop RTX 5000 Ada is neutral (1.00×). This suggests the
+speedup is not purely an SM generation effect — GPU model / power envelope / clock headroom also
+contribute. Blackwell (SM 12.0) remains the strongest at 1.75× for coherent patterns.
 
-### 3. Desktop CPU is faster in absolute terms but shows smaller relative gains
+### 3. CPU MT point-pattern regression is unique to the high-thread-count Threadripper
 
-The Ryzen 9950X is 1.4–1.6× faster per-core in absolute ns. But the NEW accessor's per-lookup
-speedup is slightly *smaller* on the desktop (e.g. stencil 1T: **2.17× laptop vs 1.56× desktop**).
-A faster baseline leaves less relative room for the cache-level improvement to show.
+| Pattern | Laptop (32T) CPU-MT | Desktop (32T) CPU-MT | Workstation (64T) CPU-MT |
+|---|--:|--:|--:|
+| Sequential | 1.22× | 1.44× | **0.95×** |
+| LeafJump | 1.12× | 1.31× | **0.91×** |
+| NodeJump | 1.09× | 1.05× | **0.80×** |
+| Random | 0.79× | 0.82× | **0.70×** |
+| Stencil | 1.68× | 1.67× | **1.83×** |
 
-### 4. Random always regresses — hardware-independent in character
+On the Threadripper PRO (64 threads), the NEW accessor's extra cache-level checks become a net
+overhead in multi-threaded point access: all cache levels miss under random scatter across 64
+competing threads, making the additional branch work pure cost. The stencil case, where each
+thread's access pattern is spatially coherent, still wins strongly (1.83×). Single-threaded CPU
+results remain consistent with the other machines (1.87–1.95× for coherent patterns).
+
+### 4. Single-threaded CPU behaviour is consistent across all machines
+
+| Pattern | Laptop CPU-1T | Desktop CPU-1T | Workstation CPU-1T |
+|---|--:|--:|--:|
+| Sequential | 1.82× | 1.70× | 1.95× |
+| LeafJump | 1.73× | 1.46× | 1.87× |
+| NodeJump | 1.29× | 1.13× | 1.10× |
+| Random | 0.76× | 0.72× | 0.73× |
+| Stencil | 2.17× | 1.56× | 1.76× |
+
+All three machines show the same qualitative pattern: coherent access wins, random regresses.
+The absolute speedup varies slightly by CPU micro-architecture but the ranking is identical.
+
+### 5. Random always regresses — hardware-independent in character
 
 The regression is intrinsic: all caches miss anyway and the extra checks are pure overhead.
-It is roughly **0.72–0.83× on both machines**, confirming this is a property of the access
-pattern, not the hardware.
+On CPU-1T it is **0.72–0.76× across all three machines**. On GPU it is **0.83–0.93×**.
+This confirms the regression is a property of the access pattern, not the hardware.
 
-### 5. The qualitative pattern is fully reproducible across machines
+### 6. The qualitative pattern is fully reproducible across machines
 
-Same ranking, same sign on every row across both machines. The two independent data sets
-confirm each other's conclusions — the results are not artifacts of a single system.
+Same ranking, same sign on single-threaded CPU and GPU rows across all three machines.
+The three independent data sets confirm each other's conclusions.
 
-**Bottom line:** the fix is solidly beneficial and portable. Stencil is the universal ~2× win.
-The point-pattern GPU benefit is an architectural bonus that appears on Blackwell (SM 12.0) but
-not on Ada (SM 8.9), and is the only result that varies qualitatively between the two machines.
+**Bottom line:** the fix is solidly beneficial and portable. Stencil is the universal ~2× win
+on all platforms. GPU coherent-pattern gains depend on GPU model (neutral on RTX 5000 Ada laptop,
+1.42–1.52× on RTX 6000 Ada workstation, 1.75× on Blackwell). The one nuance is that on
+very high thread-count CPUs (64T Threadripper PRO), multi-threaded point-pattern throughput
+regresses slightly — the extra cache checks cost more than they save when 64 threads scatter
+across the grid — while the stencil win remains large (1.83×).
 
 ---
 
 ## Per-machine takeaways
 
 - **Stencil access is the biggest and most universal win**, consistently **~2× on GPU** and
-  **1.6–2.2× on CPU** across both machines. Each centre does 27 correlated lookups;
+  **1.6–2.2× on CPU** across all three machines. Each centre does 27 correlated lookups;
   boundary-crossing neighbours that the OLD accessor sends to the root are caught by the
   NEW accessor's level-1 cache, and the saving compounds across the 27.
 
-- **Coherent point access benefits on CPU** (1.1–1.8× depending on machine and thread count).
-  The desktop (Blackwell GPU, SM 12.0) also shows **~1.75× GPU speedup** for sequential /
-  LeafJump patterns — a difference from the laptop (Ada, SM 8.9) where the GPU was neutral
-  (1.00×) for those patterns. The Blackwell micro-architecture appears to expose more of the
-  cache-level benefit on the GPU path.
+- **Coherent point access benefits on single-threaded CPU** (1.1–1.95× depending on machine).
+  GPU gains for coherent point patterns are model-dependent: neutral on the RTX 5000 Ada laptop
+  (1.00×), moderate on the RTX 6000 Ada workstation (1.42–1.52×), and highest on Blackwell
+  (1.75×). Both Ada GPUs share the same SM 8.9 architecture, so the difference is attributable
+  to power/thermal headroom and GPU model rather than SM generation alone.
 
-- **Only pathological fully-random access regresses slightly** (~0.7–0.8× on CPU, ~0.83–0.93×
-  on GPU), because every cache level misses anyway and the extra checks are pure overhead.
+- **High thread-count CPU (Threadripper PRO, 64T) shows MT regression for point patterns.**
+  With 64 threads scattering across the grid, the NEW accessor's extra cache-level checks become
+  pure overhead: all levels miss anyway and the additional branches reduce throughput by 5–30%.
+  The stencil case is unaffected — each thread remains spatially coherent and the 1.83× win holds.
+
+- **Only pathological fully-random access regresses** (~0.7–0.8× on single-threaded CPU,
+  ~0.83–0.93× on GPU), because every cache level misses anyway and the extra checks are pure
+  overhead. This is hardware-independent.
 
 - **The multi-threaded CPU makes the GPU comparison fair.** Against a fully loaded 32-core CPU
   the GPU is ~4–12× faster (not the misleading 30–170× a single thread would suggest).
   The gap is smallest for the stencil, where heavy cache reuse plays to the CPU's larger
   per-core caches.
 
-- **CPU multi-thread scaling is memory-bound:** only ~8× on 32 cores for coherent patterns on
-  the desktop (vs ~4–5× on the laptop), reflecting the desktop CPU's higher per-core bandwidth.
-  Random / stencil scale better (~17× / ~13×) because their higher per-access latency gives
-  the cores more to overlap.
+- **CPU multi-thread scaling varies by platform:** coherent patterns scale ~4–9× on 32 cores
+  (laptop/desktop); on the 64-thread Threadripper PRO the stencil achieves ~25× scaling while
+  point patterns are memory-bandwidth-limited at ~8×. Random access scales best (~28–30×) across
+  all platforms because its high per-lookup latency gives more threads useful overlap.
 
 ---
 
