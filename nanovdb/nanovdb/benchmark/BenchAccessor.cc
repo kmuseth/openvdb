@@ -1,21 +1,14 @@
 // Copyright Contributors to the OpenVDB Project
 // SPDX-License-Identifier: Apache-2.0
 //
-// CPU benchmark comparing ReadAccessor with NANOVDB_USE_OLD_ACCESSOR vs without.
-//
-// The key difference:
-//   OLD: when a leaf-value access misses the leaf cache, the level-1 and level-2
-//        cache checks are compiled away (if-constexpr + else), so the accessor
-//        falls straight to a root traversal.
-//   NEW: all applicable cache levels are always checked, so a leaf-cache miss can
-//        still hit the level-1 or level-2 cache instead of restarting at the root.
+// CPU benchmark comparing ReadAccessor with NANOVDB_USE_OLD_ACCESSOR vs without,
+// and ReadAccessor<0,1,2> (full 3-level cache) vs ReadAccessor<0> (leaf-only cache).
 //
 // Two CPU modes are timed:
 //   1T  -- single-threaded serial walk (latency).
 //   MT  -- multi-threaded via nanovdb::util::forEach (tbb::parallel_for),
 //          each grain using its own accessor so the cache-reuse semantics match
-//          the serial walk. This makes the CPU-vs-GPU comparison fair: all CPU
-//          cores against the full GPU.
+//          the serial walk.
 
 #include "BenchPatterns.h"
 
@@ -38,19 +31,16 @@ static double elapsed_ns(Clock::time_point t0, Clock::time_point t1)
     return static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
 }
 
-// Prevent the compiler from optimising away the accumulation result.
 static volatile float g_sink = 0.0f;
 
-// Contiguous coords per grain -- large enough for accessor cache reuse, small
-// enough to spread work evenly across cores.
 static constexpr int GRAIN = 4096;
 
 // --- single-threaded (latency) ----------------------------------------------
 
-template<typename GridT>
-static double runTrial1T(const GridT* grid, const std::vector<nanovdb::Coord>& coords)
+template<typename AccT, typename RootT>
+static double runTrial1T(const RootT& root, const std::vector<nanovdb::Coord>& coords)
 {
-    auto  acc = grid->getAccessor();
+    AccT  acc(root);
     float sum = 0.0f;
     auto  t0  = Clock::now();
     for (const auto& c : coords)
@@ -62,7 +52,7 @@ static double runTrial1T(const GridT* grid, const std::vector<nanovdb::Coord>& c
 
 // --- multi-threaded (throughput) --------------------------------------------
 
-template<typename GridT>
+template<typename AccT, typename GridT>
 static double runTrialMT(const GridT* grid, const std::vector<nanovdb::Coord>& coords,
                          std::vector<float>& out)
 {
@@ -70,7 +60,7 @@ static double runTrialMT(const GridT* grid, const std::vector<nanovdb::Coord>& c
     float*                po = out.data();
     auto t0 = Clock::now();
     nanovdb::util::forEach(0, coords.size(), GRAIN, [&](const nanovdb::util::Range1D& r) {
-        auto acc = grid->getAccessor(); // one accessor per grain -> per-thread cache
+        AccT acc(grid->tree().root());
         for (size_t i = r.begin(); i != r.end(); ++i)
             po[i] = acc.getValue(pc[i]);
     });
@@ -81,7 +71,7 @@ static double runTrialMT(const GridT* grid, const std::vector<nanovdb::Coord>& c
     return elapsed_ns(t0, t1) / static_cast<double>(coords.size());
 }
 
-// --- 3x3x3 stencil: 27-neighbour lookup around each centre ------------------
+// --- 3x3x3 stencil ----------------------------------------------------------
 
 template<typename AccT>
 static float stencilSum(AccT& acc, const nanovdb::Coord& c)
@@ -94,20 +84,20 @@ static float stencilSum(AccT& acc, const nanovdb::Coord& c)
     return s;
 }
 
-template<typename GridT>
-static double runStencil1T(const GridT* grid, const std::vector<nanovdb::Coord>& centers)
+template<typename AccT, typename RootT>
+static double runStencil1T(const RootT& root, const std::vector<nanovdb::Coord>& centers)
 {
-    auto  acc = grid->getAccessor();
+    AccT  acc(root);
     float sum = 0.0f;
     auto  t0  = Clock::now();
     for (const auto& c : centers)
         sum += stencilSum(acc, c);
     auto t1 = Clock::now();
     g_sink = sum;
-    return elapsed_ns(t0, t1) / static_cast<double>(centers.size()); // ns per stencil
+    return elapsed_ns(t0, t1) / static_cast<double>(centers.size());
 }
 
-template<typename GridT>
+template<typename AccT, typename GridT>
 static double runStencilMT(const GridT* grid, const std::vector<nanovdb::Coord>& centers,
                            std::vector<float>& out)
 {
@@ -115,7 +105,7 @@ static double runStencilMT(const GridT* grid, const std::vector<nanovdb::Coord>&
     float*                po = out.data();
     auto t0 = Clock::now();
     nanovdb::util::forEach(0, centers.size(), GRAIN, [&](const nanovdb::util::Range1D& r) {
-        auto acc = grid->getAccessor();
+        AccT acc(grid->tree().root());
         for (size_t i = r.begin(); i != r.end(); ++i)
             po[i] = stencilSum(acc, pc[i]);
     });
@@ -123,7 +113,7 @@ static double runStencilMT(const GridT* grid, const std::vector<nanovdb::Coord>&
     float sum = 0.0f;
     for (size_t i = 0; i < centers.size(); ++i) sum += po[i];
     g_sink = sum;
-    return elapsed_ns(t0, t1) / static_cast<double>(centers.size()); // ns per stencil
+    return elapsed_ns(t0, t1) / static_cast<double>(centers.size());
 }
 
 template<typename FnT>
@@ -134,6 +124,37 @@ static double median(FnT trial, int nTrials = 7)
         times[i] = trial();
     std::nth_element(times.begin(), times.begin() + nTrials / 2, times.end());
     return times[nTrials / 2];
+}
+
+template<typename AccT, typename GridT>
+static void runSuite(const GridT* grid, const char* accLabel, int N,
+                     std::vector<float>& out)
+{
+    const bench::Pattern patterns[] = {
+        bench::Pattern::Sequential, bench::Pattern::LeafJump,
+        bench::Pattern::NodeJump,   bench::Pattern::Random};
+
+    for (auto p : patterns) {
+        auto   coords = bench::makePattern(p, N);
+        double ns1 = median([&] { return runTrial1T<AccT>(grid->tree().root(), coords); });
+        double nsM = median([&] { return runTrialMT<AccT>(grid, coords, out); });
+        std::cout << "  " << std::left << std::setw(14) << bench::name(p)
+                  << std::setw(8) << accLabel
+                  << std::right << std::setw(10) << std::fixed << std::setprecision(2) << ns1
+                  << std::setw(13) << nsM
+                  << std::setw(11) << std::setprecision(1) << (ns1 / nsM) << "x\n";
+    }
+
+    auto   centers = bench::makeStencilCenters();
+    double ns1 = median([&] { return runStencil1T<AccT>(grid->tree().root(), centers); });
+    double nsM = median([&] { return runStencilMT<AccT>(grid, centers, out); });
+    std::cout << "  " << std::left << std::setw(14) << "Stencil(27pt)"
+              << std::setw(8) << accLabel
+              << std::right << std::setw(10) << std::fixed << std::setprecision(2) << ns1
+              << std::setw(13) << nsM
+              << std::setw(11) << std::setprecision(1) << (ns1 / nsM) << "x"
+              << "   [" << std::setprecision(3) << ns1/27.0 << " / "
+              << nsM/27.0 << " ns/lookup]\n";
 }
 
 int main()
@@ -153,37 +174,17 @@ int main()
 
     std::cout << "Access count per pattern: " << N
               << "   HW threads: " << std::thread::hardware_concurrency() << "\n\n";
-    std::cout << "Pattern           1T ns/acc    MT ns/acc    MT speedup\n";
-    std::cout << "-----------------------------------------------------\n";
-
-    const bench::Pattern patterns[] = {
-        bench::Pattern::Sequential, bench::Pattern::LeafJump,
-        bench::Pattern::NodeJump,   bench::Pattern::Random};
+    std::cout << "Pattern           Accessor  1T ns/acc    MT ns/acc    MT speedup\n";
+    std::cout << "-------------------------------------------------------------------\n";
 
     std::vector<float> out(N);
-    for (auto p : patterns) {
-        auto   coords = bench::makePattern(p, N);
-        double ns1 = median([&] { return runTrial1T(grid, coords); });
-        double nsM = median([&] { return runTrialMT(grid, coords, out); });
-        std::cout << "  " << std::left << std::setw(14) << bench::name(p)
-                  << std::right << std::setw(10) << std::fixed << std::setprecision(2) << ns1
-                  << std::setw(13) << nsM
-                  << std::setw(11) << std::setprecision(1) << (ns1 / nsM) << "x\n";
-    }
 
-    // 3x3x3 stencil sweep (27 neighbour lookups per centre).
-    {
-        auto   centers = bench::makeStencilCenters();
-        double ns1 = median([&] { return runStencil1T(grid, centers); });
-        double nsM = median([&] { return runStencilMT(grid, centers, out); });
-        std::cout << "\nStencil 3x3x3 (27 lookups/centre), centres = " << centers.size() << "\n";
-        std::cout << std::fixed;
-        std::cout << "  1T: " << std::setprecision(2) << std::setw(8) << ns1 << " ns/stencil  ("
-                  << std::setprecision(3) << ns1 / 27.0 << " ns/lookup)\n";
-        std::cout << "  MT: " << std::setprecision(2) << std::setw(8) << nsM << " ns/stencil  ("
-                  << std::setprecision(3) << nsM / 27.0 << " ns/lookup),  speedup "
-                  << std::setprecision(1) << ns1 / nsM << "x\n";
-    }
+    using Acc012 = nanovdb::ReadAccessor<float, 0, 1, 2>;
+    using Acc0   = nanovdb::ReadAccessor<float, 0>;
+
+    runSuite<Acc012>(grid, "<0,1,2>", N, out);
+    std::cout << "\n";
+    runSuite<Acc0>(grid, "<0>", N, out);
 
     return 0;
 }

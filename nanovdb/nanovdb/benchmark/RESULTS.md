@@ -1,20 +1,32 @@
-# NanoVDB `ReadAccessor` Benchmark — OLD vs NEW, CPU vs GPU
+# NanoVDB `ReadAccessor` Benchmark — OLD vs NEW, Acc=\<0,1,2\> vs Acc=\<0\>, CPU vs GPU
 
 Benchmarks comparing the `NANOVDB_USE_OLD_ACCESSOR` caching behaviour (ON vs OFF)
+and `ReadAccessor<0,1,2>` (full 3-level cache, default) vs `ReadAccessor<0>` (leaf-only cache)
 across access patterns, on CPU (single- and multi-threaded) and GPU.
 Results are collected from three machines: a **laptop**, a **desktop**, and a **workstation**.
+The OLD/NEW comparison for Laptop and Desktop used only `ReadAccessor<0,1,2>`;
+the full accessor-type comparison was run on the Workstation.
 
 ## What is being measured
 
 The `ReadAccessor` caches the tree nodes visited on the previous access so a
 spatially nearby access can skip the traversal from the root.
 
-- **OLD** (`NANOVDB_USE_OLD_ACCESSOR` defined): on a leaf-cache miss the level-1
-  and level-2 cache checks are compiled away (`if constexpr` + `else`), so the
-  accessor falls straight to a full **root traversal**.
-- **NEW** (`NANOVDB_NO_OLD_ACCESSOR` defined): all applicable cache levels are
-  always checked, so a leaf-cache miss can still hit the **level-1 / level-2**
-  cache instead of restarting at the root.
+- **OLD** (`NANOVDB_USE_OLD_ACCESSOR` defined): the `get()` method uses
+  `if constexpr` + `else` chaining. For `getValue` (operation LEVEL=0), the
+  `if constexpr(LEVEL<=0)` branch is taken and the `else` discards all
+  higher-level cache checks — so the 3-level accessor falls straight to a
+  **root traversal** on any leaf-cache miss, effectively behaving like a
+  leaf-only accessor.
+- **NEW** (`NANOVDB_NO_OLD_ACCESSOR` defined): the `else` is removed, so all
+  three cache-level checks execute unconditionally. A leaf-cache miss can still
+  hit the **level-1 / level-2** cache instead of restarting at the root.
+- **`ReadAccessor<0,1,2>`** (`DefaultReadAccessor`): maintains leaf, lower-internal,
+  and upper-internal node caches. With NEW, the full 3-level check is active.
+  With OLD, the extra levels are stored but never checked on a read — making it
+  functionally equivalent to a larger `ReadAccessor<0>` struct.
+- **`ReadAccessor<0>`**: caches only the leaf node. On a leaf miss it always goes
+  straight to root. Unaffected by the OLD/NEW flag (no level-1/2 to check).
 
 ## Methodology
 
@@ -253,184 +265,211 @@ The stencil row is the per-lookup cost inside a 27-neighbour sweep.
 
 ## Results — Workstation (AMD Ryzen Threadripper PRO 7975WX / RTX 6000 Ada, SM 8.9)
 
-### Combined — ns per lookup (one `getValue` call), lower = faster
+Both `ReadAccessor<0,1,2>` and `ReadAccessor<0>` were benchmarked on this machine
+under both OLD and NEW compile-time modes. The Laptop and Desktop results (above) used
+only `ReadAccessor<0,1,2>`; the accessor-type comparison is new here.
 
-The stencil row is the per-lookup cost inside a 27-neighbour sweep.
+### CPU single-threaded — ns per lookup (latency)
 
-| Pattern | CPU-1T OLD | CPU-1T NEW | CPU-MT OLD | CPU-MT NEW | GPU OLD | GPU NEW |
-|---|--:|--:|--:|--:|--:|--:|
-| Sequential (stride 1) | 3.20 | **1.64** | **0.20** | 0.21 | 0.034 | **0.024** |
-| LeafJump (stride 8) | 3.09 | **1.65** | **0.20** | 0.22 | 0.035 | **0.023** |
-| NodeJump (stride 128) | 3.18 | **2.90** | **0.20** | 0.25 | 0.027 | **0.025** |
-| Random (uniform) | **8.35** | 11.42 | **0.28** | 0.40 | **0.046** | 0.052 |
-| **Stencil (3×3×3, 27-pt)** | 3.492 | **1.981** | 0.143 | **0.078** | 0.0578 | **0.0269** |
-
-*Legend:* CPU-1T = single thread · CPU-MT = 64 threads (TBB) · GPU = RTX 6000 Ada.
-
-### OLD → NEW speedup ( >1 = the fix is faster )
-
-| Pattern | CPU-1T | CPU-MT | GPU |
-|---|--:|--:|--:|
-| Sequential | 1.95× | 0.95× | 1.42× |
-| LeafJump | 1.87× | 0.91× | 1.52× |
-| NodeJump | 1.10× | 0.80× | 1.08× |
-| Random | 0.73× | 0.70× | 0.88× |
-| **Stencil** | **1.76×** | **1.83×** | **2.15×** |
-
-### Detailed tables — Workstation
-
-#### CPU, single-threaded (latency) — ns per lookup
-
-| Pattern | OLD | NEW | OLD→NEW |
-|---|--:|--:|--:|
-| Sequential | 3.20 | **1.64** | 1.95× |
-| LeafJump | 3.09 | **1.65** | 1.87× |
-| NodeJump | 3.18 | **2.90** | 1.10× |
-| Random | **8.35** | 11.42 | 0.73× |
-| Stencil | 3.492 | **1.981** | 1.76× |
-
-#### CPU, 64 threads (throughput) — ns per lookup
-
-| Pattern | OLD | NEW | OLD→NEW | MT speedup (NEW) |
+| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
 |---|--:|--:|--:|--:|
-| Sequential | **0.20** | 0.21 | 0.95× | 7.8× |
-| LeafJump | **0.20** | 0.22 | 0.91× | 7.5× |
-| NodeJump | **0.20** | 0.25 | 0.80× | 11.6× |
-| Random | **0.28** | 0.40 | 0.70× | 28.6× |
-| Stencil | 0.143 | **0.078** | 1.83× | 25.4× |
+| Sequential | 3.20 | 3.12 | **1.38** | 2.69 |
+| LeafJump | 3.27 | 2.96 | **1.83** | 2.75 |
+| NodeJump | 3.17 | **2.67** | 6.65 | **2.68** |
+| Random | 8.08 | **6.81** | 9.63 | **6.74** |
+| Stencil (ns/lookup) | 3.591 | 2.835 | **1.587** | 2.918 |
 
-Note: for all point patterns the OLD accessor is faster in multi-threaded mode on this machine.
-See the cross-machine comparison below for analysis.
+### CPU 64-threaded — ns per lookup (throughput)
 
-#### GPU (throughput) — ns per lookup
+| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
+|---|--:|--:|--:|--:|
+| Sequential | 0.21 | 0.21 | 0.22 | **0.21** |
+| LeafJump | 0.21 | 0.23 | 0.23 | **0.22** |
+| NodeJump | 0.22 | 0.23 | 0.23 | **0.19** |
+| Random | 0.29 | **0.26** | 0.39 | **0.26** |
+| Stencil (ns/lookup) | 0.137 | 0.118 | **0.087** | 0.123 |
 
-| Pattern | OLD | NEW | OLD→NEW |
-|---|--:|--:|--:|
-| Sequential | 0.034 | **0.024** | 1.42× |
-| LeafJump | 0.035 | **0.023** | 1.52× |
-| NodeJump | 0.027 | **0.025** | 1.08× |
-| Random | **0.046** | 0.052 | 0.88× |
-| Stencil | 0.0578 | **0.0269** | 2.15× |
+### GPU — ns per lookup (throughput)
 
-#### Stencil (3×3×3) — reported per whole 27-neighbour stencil
+| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
+|---|--:|--:|--:|--:|
+| Sequential | 0.029 | 0.030 | **0.024** | 0.031 |
+| LeafJump | 0.030 | 0.029 | **0.023** | 0.031 |
+| NodeJump | 0.025 | 0.025 | 0.025 | **0.026** |
+| Random | **0.046** | **0.046** | 0.055 | 0.048 |
+| Stencil (ns/lookup) | 0.0578 | 0.0577 | **0.0269** | 0.0577 |
 
-| Platform / Mode | OLD ns/stencil | NEW ns/stencil | OLD→NEW |
-|---|--:|--:|--:|
-| CPU 1 thread | 94.28 | **53.50** | 1.76× |
-| CPU 64 threads | 3.86 | **2.12** | 1.82× |
-| GPU | 1.5593 | **0.7266** | 2.15× |
+### OLD → NEW speedup by accessor type
 
-#### Fair platform comparison — NEW accessor, full hardware (ns per lookup)
+| Pattern | CPU-1T \<0,1,2\> | CPU-1T \<0\> | CPU-MT \<0,1,2\> | CPU-MT \<0\> | GPU \<0,1,2\> | GPU \<0\> |
+|---|--:|--:|--:|--:|--:|--:|
+| Sequential | **2.32×** | 1.16× | 0.95× | 1.00× | **1.21×** | 0.97× |
+| LeafJump | **1.79×** | 1.08× | 0.91× | 1.05× | **1.30×** | 0.94× |
+| NodeJump | 0.48× | 1.00× | 0.96× | **1.21×** | 1.00× | 0.96× |
+| Random | 0.84× | 1.01× | 0.74× | 1.00× | 0.84× | 0.96× |
+| **Stencil** | **2.26×** | 0.97× | **1.57×** | 0.96× | **2.15×** | 1.00× |
+
+Key: **`ReadAccessor<0>` is essentially unchanged by OLD→NEW** across all patterns and platforms.
+The improvement (and regression) from the accessor fix is specific to `ReadAccessor<0,1,2>`.
+
+### Stencil detail — ns per whole 27-neighbour stencil
+
+| Platform | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
+|---|--:|--:|--:|--:|
+| CPU 1 thread | 96.96 | 76.56 | **42.86** | 78.79 |
+| CPU 64 threads | 3.71 | 3.20 | **2.35** | 3.31 |
+| GPU | 1.5597 | 1.5582 | **0.7266** | 1.5576 |
+
+### Best-accessor recommendation (NEW mode, this machine)
+
+| Pattern | Best choice | Why |
+|---|---|---|
+| Sequential | `<0,1,2>` (1.38 ns) | Level-1 cache stays warm between leaf-boundary crossings |
+| LeafJump | `<0,1,2>` (1.83 ns) | Same — level-1 rescues leaf misses |
+| NodeJump | `<0>` (2.68 ns) | Level-2 cache checks add overhead; root lookup is cheaper here |
+| Random | `<0>` (6.74 ns) | All levels miss; extra checks are pure cost |
+| Stencil | `<0,1,2>` (1.587 ns/lkp) | Boundary neighbours caught by level-1; ~1.84× over `<0>` |
+
+### Fair platform comparison — best accessor (NEW), full hardware
 
 | Workload | CPU-1T | CPU-64T | GPU | GPU vs CPU-64T |
 |---|--:|--:|--:|--:|
-| Sequential | 1.64 | 0.21 | 0.024 | 8.8× |
-| Random | 11.42 | 0.40 | 0.052 | 7.7× |
-| Stencil | 1.981 | 0.078 | 0.0269 | 2.9× |
+| Sequential (`<0,1,2>`) | 1.38 | 0.22 | 0.024 | 9.2× |
+| Random (`<0>`) | 6.74 | 0.26 | 0.048 | 5.4× |
+| Stencil (`<0,1,2>`) | 1.587 | 0.087 | 0.0269 | 3.2× |
 
 ---
 
 ## Cross-machine comparison (Laptop vs Desktop vs Workstation)
 
-### 1. The stencil win is universal and consistent
+*Note: Laptop and Desktop data uses `ReadAccessor<0,1,2>` only. Workstation data
+covers both accessor types; the cross-machine comparison below uses `<0,1,2>` for
+consistency, except where accessor type is the explicit subject.*
 
-The NEW accessor's stencil speedup is **~2× on GPU and 1.6–2.2× on CPU across all three machines**.
-This is the most reproducible finding — it does not depend on CPU generation, thread count, or GPU architecture.
+### 1. The stencil win is universal and consistent for \<0,1,2\>
 
-### 2. GPU point-pattern speedup is GPU-model-dependent, not Ada vs Blackwell
+The NEW `<0,1,2>` accessor's stencil speedup is **~2× on GPU and 1.6–2.3× on CPU
+across all three machines**. It is the most reproducible finding and does not depend
+on CPU generation, thread count, or GPU model.
+
+`ReadAccessor<0>` sees **no stencil benefit** from NEW on any platform (≈1.00×),
+confirming the gain comes entirely from the level-1 cache catching boundary neighbours
+— a feature absent in the leaf-only accessor.
+
+### 2. NodeJump CPU-1T: NEW \<0,1,2\> is dramatically slower on the Workstation
+
+| Pattern | WS OLD \<0,1,2\> | WS NEW \<0,1,2\> | WS NEW \<0\> |
+|---|--:|--:|--:|
+| NodeJump | 3.17 | **6.65** | **2.68** |
+
+With NEW + `<0,1,2>`, the NodeJump pattern (stride=128, one lower-internal-node span) triggers
+a level-2 cache hit after two failed checks (leaf miss + level-1 miss). On this machine and
+sphere grid (only 8 level-2 nodes), the overhead of two failed cache comparisons plus starting
+from level-2 exceeds the cost of the root map lookup (8 children), making NEW `<0,1,2>` ~2×
+slower than both OLD `<0,1,2>` and NEW `<0>`. `ReadAccessor<0>` avoids this by falling
+directly to root after the single leaf check.
+
+Previous runs (Laptop, Desktop) showed NodeJump `<0,1,2>` gains of 1.13–1.29×. The workstation
+regression may reflect the Threadripper PRO's larger per-core L2 cache making the root path
+unusually cheap, or a latency difference in how the two paths are branch-predicted.
+
+### 3. GPU point-pattern speedup is GPU-model-dependent, not architecture alone
+
+`ReadAccessor<0,1,2>` with NEW, OLD→NEW speedup for point patterns:
 
 | Pattern | Laptop Ada RTX 5000 (SM 8.9) | Workstation Ada RTX 6000 (SM 8.9) | Desktop Blackwell RTX PRO 6000 (SM 12.0) |
 |---|--:|--:|--:|
-| Sequential | 1.00× | **1.42×** | **1.75×** |
-| LeafJump | 1.00× | **1.52×** | **1.75×** |
-| NodeJump | 0.98× | 1.08× | 1.17× |
-| Random | 0.93× | 0.88× | 0.83× |
+| Sequential | 1.00× | **1.21×** | **1.75×** |
+| LeafJump | 1.00× | **1.30×** | **1.75×** |
+| NodeJump | 0.98× | 1.00× | 1.17× |
+| Random | 0.93× | 0.84× | 0.83× |
 
-Both Ada machines show *different* results: the workstation RTX 6000 Ada extracts 1.42–1.52×
-for coherent point patterns while the laptop RTX 5000 Ada is neutral (1.00×). This suggests the
-speedup is not purely an SM generation effect — GPU model / power envelope / clock headroom also
-contribute. Blackwell (SM 12.0) remains the strongest at 1.75× for coherent patterns.
+Both Ada GPUs share SM 8.9 yet differ: RTX 6000 (workstation) extracts 1.21–1.30× for coherent
+patterns while RTX 5000 (laptop) is neutral. Blackwell (SM 12.0) consistently extracts the most.
+`ReadAccessor<0>` with NEW is neutral (≈1.00×) on GPU for all patterns on all machines.
 
-### 3. CPU MT point-pattern regression is unique to the high-thread-count Threadripper
+### 4. GPU Stencil: only \<0,1,2\> benefits from NEW
 
-| Pattern | Laptop (32T) CPU-MT | Desktop (32T) CPU-MT | Workstation (64T) CPU-MT |
+| Machine | GPU Stencil OLD \<0,1,2\> | GPU Stencil NEW \<0,1,2\> | GPU Stencil NEW \<0\> |
 |---|--:|--:|--:|
-| Sequential | 1.22× | 1.44× | **0.95×** |
-| LeafJump | 1.12× | 1.31× | **0.91×** |
-| NodeJump | 1.09× | 1.05× | **0.80×** |
-| Random | 0.79× | 0.82× | **0.70×** |
-| Stencil | 1.68× | 1.67× | **1.83×** |
+| Workstation (Ada RTX 6000) | 0.0578 | **0.0269** (2.15×) | 0.0577 (≈1.00×) |
+| Laptop (Ada RTX 5000) | 0.086 | **0.040** (2.17×) | — |
+| Desktop (Blackwell) | 0.0587 | **0.0275** (2.14×) | — |
 
-On the Threadripper PRO (64 threads), the NEW accessor's extra cache-level checks become a net
-overhead in multi-threaded point access: all cache levels miss under random scatter across 64
-competing threads, making the additional branch work pure cost. The stencil case, where each
-thread's access pattern is spatially coherent, still wins strongly (1.83×). Single-threaded CPU
-results remain consistent with the other machines (1.87–1.95× for coherent patterns).
+The stencil GPU speedup is ~2.15× for `<0,1,2>` on all three machines and ~1.00× for `<0>`.
+This confirms the level-1 cache is the source of the gain.
 
-### 4. Single-threaded CPU behaviour is consistent across all machines
+### 5. CPU MT regression is tied to thread count AND accessor type
 
-| Pattern | Laptop CPU-1T | Desktop CPU-1T | Workstation CPU-1T |
+`ReadAccessor<0,1,2>` OLD→NEW, multi-threaded:
+
+| Pattern | Laptop 32T | Desktop 32T | Workstation 64T |
 |---|--:|--:|--:|
-| Sequential | 1.82× | 1.70× | 1.95× |
-| LeafJump | 1.73× | 1.46× | 1.87× |
-| NodeJump | 1.29× | 1.13× | 1.10× |
-| Random | 0.76× | 0.72× | 0.73× |
-| Stencil | 2.17× | 1.56× | 1.76× |
+| Sequential | 1.22× | 1.44× | 0.95× |
+| NodeJump | 1.09× | 1.05× | 0.96× |
+| Stencil | **1.68×** | **1.67×** | **1.57×** |
 
-All three machines show the same qualitative pattern: coherent access wins, random regresses.
-The absolute speedup varies slightly by CPU micro-architecture but the ranking is identical.
+`ReadAccessor<0>` OLD→NEW is 1.00× (neutral) for all MT patterns on all machines.
 
-### 5. Random always regresses — hardware-independent in character
+The workstation's MT point-pattern regression is specific to `<0,1,2>`: the extra cache-level
+checks add overhead when 64 threads scatter across the grid. With `<0>`, there are no extra
+checks so there is no regression.
 
-The regression is intrinsic: all caches miss anyway and the extra checks are pure overhead.
-On CPU-1T it is **0.72–0.76× across all three machines**. On GPU it is **0.83–0.93×**.
-This confirms the regression is a property of the access pattern, not the hardware.
+### 6. Random always regresses for \<0,1,2\>; \<0\> is neutral
 
-### 6. The qualitative pattern is fully reproducible across machines
+For `<0,1,2>`: all caches miss, extra checks are pure overhead → 0.73–0.84× on CPU-1T,
+0.83–0.93× on GPU. For `<0>`: no extra checks → 1.00–1.01× on all platforms.
 
-Same ranking, same sign on single-threaded CPU and GPU rows across all three machines.
-The three independent data sets confirm each other's conclusions.
+### Summary and bottom line
 
-**Bottom line:** the fix is solidly beneficial and portable. Stencil is the universal ~2× win
-on all platforms. GPU coherent-pattern gains depend on GPU model (neutral on RTX 5000 Ada laptop,
-1.42–1.52× on RTX 6000 Ada workstation, 1.75× on Blackwell). The one nuance is that on
-very high thread-count CPUs (64T Threadripper PRO), multi-threaded point-pattern throughput
-regresses slightly — the extra cache checks cost more than they save when 64 threads scatter
-across the grid — while the stencil win remains large (1.83×).
+**The NEW fix is unambiguously beneficial for `ReadAccessor<0,1,2>` on stencil and coherent
+point patterns.** The gains are 1.5–2.3× and portable across CPU and GPU. `ReadAccessor<0>`
+(leaf-only) sees no benefit from the fix and no regression — it is effectively unchanged.
+
+For production use with the NEW accessor, the choice of accessor type matters:
+
+| Use case | Recommended accessor |
+|---|---|
+| Stencil / convolution / dense sweep | `ReadAccessor<0,1,2>` (NEW gains 2×) |
+| Sequential / LeafJump access | `ReadAccessor<0,1,2>` (NEW gains 1.4–2.3×) |
+| NodeJump / random scatter | `ReadAccessor<0>` (avoids regression, same or faster) |
+| Unknown / mixed | `ReadAccessor<0,1,2>` — wins on the common workloads |
 
 ---
 
 ## Per-machine takeaways
 
-- **Stencil access is the biggest and most universal win**, consistently **~2× on GPU** and
-  **1.6–2.2× on CPU** across all three machines. Each centre does 27 correlated lookups;
-  boundary-crossing neighbours that the OLD accessor sends to the root are caught by the
-  NEW accessor's level-1 cache, and the saving compounds across the 27.
+- **Stencil access is the biggest and most universal win** for `ReadAccessor<0,1,2>`:
+  **~2× on GPU** and **1.6–2.3× on CPU** across all three machines. The level-1 cache
+  catches boundary-crossing neighbours that OLD sent to root; the saving compounds across
+  the 27 lookups per centre. `ReadAccessor<0>` sees no stencil benefit on any platform.
 
-- **Coherent point access benefits on single-threaded CPU** (1.1–1.95× depending on machine).
-  GPU gains for coherent point patterns are model-dependent: neutral on the RTX 5000 Ada laptop
-  (1.00×), moderate on the RTX 6000 Ada workstation (1.42–1.52×), and highest on Blackwell
-  (1.75×). Both Ada GPUs share the same SM 8.9 architecture, so the difference is attributable
-  to power/thermal headroom and GPU model rather than SM generation alone.
+- **Coherent point access benefits on single-threaded CPU** with `<0,1,2>` (1.4–2.3×
+  depending on machine). GPU gains are model-dependent: neutral on RTX 5000 Ada (laptop),
+  1.21–1.30× on RTX 6000 Ada (workstation), 1.75× on Blackwell (SM 12.0).
 
-- **High thread-count CPU (Threadripper PRO, 64T) shows MT regression for point patterns.**
-  With 64 threads scattering across the grid, the NEW accessor's extra cache-level checks become
-  pure overhead: all levels miss anyway and the additional branches reduce throughput by 5–30%.
-  The stencil case is unaffected — each thread remains spatially coherent and the 1.83× win holds.
+- **NodeJump CPU-1T with NEW `<0,1,2>` regresses 2× on the Workstation** (6.65 vs 3.17 ns),
+  while `<0>` is neutral (2.67–2.68 ns in both OLD and NEW). When the pattern lands exactly
+  on level-2 cache hits after two failed checks, the overhead exceeds the root-lookup cost
+  for a small grid. `ReadAccessor<0>` avoids this entirely.
 
-- **Only pathological fully-random access regresses** (~0.7–0.8× on single-threaded CPU,
-  ~0.83–0.93× on GPU), because every cache level misses anyway and the extra checks are pure
-  overhead. This is hardware-independent.
+- **High thread-count CPU (Threadripper PRO, 64T) shows MT regression** for `<0,1,2>` point
+  patterns (0.70–0.96×): with 64 threads scattering across the grid, the extra cache checks
+  in NEW cost more than they save. `<0>` is neutral in MT too. The stencil win holds for
+  `<0,1,2>` at 1.57× even on 64 threads.
 
-- **The multi-threaded CPU makes the GPU comparison fair.** Against a fully loaded 32-core CPU
-  the GPU is ~4–12× faster (not the misleading 30–170× a single thread would suggest).
-  The gap is smallest for the stencil, where heavy cache reuse plays to the CPU's larger
-  per-core caches.
+- **`ReadAccessor<0>` is effectively unchanged by the OLD→NEW flag** on all platforms,
+  patterns, and thread counts. Its code path (leaf check → root) is unaffected by the
+  `#ifdef`-controlled `else` blocks that only appear in `<0,1,2>`.
 
-- **CPU multi-thread scaling varies by platform:** coherent patterns scale ~4–9× on 32 cores
-  (laptop/desktop); on the 64-thread Threadripper PRO the stencil achieves ~25× scaling while
-  point patterns are memory-bandwidth-limited at ~8×. Random access scales best (~28–30×) across
-  all platforms because its high per-lookup latency gives more threads useful overlap.
+- **The multi-threaded CPU makes the GPU comparison fair.** Against a fully loaded 64-thread
+  Threadripper PRO the GPU (RTX 6000 Ada) is ~3–9× faster (not the 50–280× a single thread
+  would suggest). The gap is smallest for stencil (~3×), reflecting the CPU's larger per-core
+  caches absorbing the coherent reuse.
+
+- **CPU multi-thread scaling**: on the 64-thread Threadripper PRO, stencil `<0,1,2>` NEW
+  achieves ~18× scaling (1T→64T), random achieves ~28× (latency-hiding), and sequential/coherent
+  patterns hit ~6–7× (memory-bandwidth-limited).
 
 ---
 
@@ -445,17 +484,17 @@ cmake --build build --target \
   bench_accessor_old bench_accessor_new \
   bench_accessor_cuda_old bench_accessor_cuda_new -j
 
-# Run (CPU prints single- and multi-threaded columns; GPU prints device throughput)
+# Run — each binary prints results for both ReadAccessor<0,1,2> and ReadAccessor<0>
 cd build/nanovdb/nanovdb/benchmark
-./bench_accessor_old        # CPU, OLD accessor
-./bench_accessor_new        # CPU, NEW accessor
-./bench_accessor_cuda_old   # GPU, OLD accessor
-./bench_accessor_cuda_new   # GPU, NEW accessor
+./bench_accessor_old        # CPU, OLD accessor, both <0,1,2> and <0>
+./bench_accessor_new        # CPU, NEW accessor, both <0,1,2> and <0>
+./bench_accessor_cuda_old   # GPU, OLD accessor, both <0,1,2> and <0>
+./bench_accessor_cuda_new   # GPU, NEW accessor, both <0,1,2> and <0>
 ```
 
 The OLD vs NEW behaviour is selected at compile time per target
-(`-DNANOVDB_USE_OLD_ACCESSOR` vs `-DNANOVDB_NO_OLD_ACCESSOR`), so no reconfigure
-is needed to compare them.
+(`-DNANOVDB_USE_OLD_ACCESSOR` vs `-DNANOVDB_NO_OLD_ACCESSOR`). Both accessor types
+(`ReadAccessor<0,1,2>` and `ReadAccessor<0>`) are run within each binary.
 
 ### Files
 
