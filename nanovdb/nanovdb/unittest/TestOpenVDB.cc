@@ -19,6 +19,7 @@
 #include <nanovdb/math/HDDA.h>
 #include <nanovdb/util/Timer.h>
 #include <nanovdb/tools/GridBuilder.h>
+#include <nanovdb/tools/OpenFileToNanoGrid.h>
 
 #if !defined(_MSC_VER) // does not compile in msvc c++ due to zero-sized arrays.
 #include <nanovdb/CNanoVDB.h>
@@ -3589,6 +3590,244 @@ TEST_F(TestOpenVDB, CreateIndexGridFromOpen)
         nanovdb::io::writeGrid("data/ls_dragon_index2.nvdb", handle, this->getCodec());
     }
 }// CreateIndexGridFromOpen
+
+// ============================================================================
+// OpenFileToNanoGrid — unit tests for OpenFileToNanoGrid.h
+// ============================================================================
+
+TEST_F(TestOpenVDB, OpenFileToNanoGrid_LevelSetSphere)
+{
+    // Build a small float level-set sphere in OpenVDB
+    const float          radius    = 50.0f;
+    const float          voxelSize = 1.0f;
+    const float          halfWidth = 3.0f;
+    const openvdb::Vec3f center(0.0f, 0.0f, 0.0f);
+
+    auto srcGrid = openvdb::tools::createLevelSetSphere<openvdb::FloatGrid>(
+        radius, center, voxelSize, halfWidth);
+    srcGrid->setName("ls_sphere");
+
+    // Write to a temporary .vdb file
+    const std::string vdbPath = "data/test_opentonano_ls.vdb";
+    {
+        openvdb::io::File f(vdbPath);
+        f.write({srcGrid});
+        f.close();
+    }
+
+    // Read back with our new reader
+    auto handle = nanovdb::tools::openFileToNanoGrid<openvdb::FloatGrid>(vdbPath);
+    auto* nanoGrid = handle.grid<float>();
+    ASSERT_TRUE(nanoGrid);
+
+    // Build a reference NanoVDB grid via the standard in-memory path
+    auto refHandle = nanovdb::tools::createNanoGrid(*srcGrid,
+                                                    nanovdb::tools::StatsMode::All,
+                                                    nanovdb::CheckMode::Disable);
+    auto* refGrid = refHandle.grid<float>();
+    ASSERT_TRUE(refGrid);
+
+    // ── Grid metadata ───────────────────────────────────────────────────────
+    EXPECT_EQ(std::string("ls_sphere"), nanoGrid->gridName());
+    EXPECT_EQ(nanovdb::GridType::Float,      nanoGrid->gridType());
+    EXPECT_EQ(nanovdb::GridClass::LevelSet,  nanoGrid->gridClass());
+
+    // ── Active-voxel count ──────────────────────────────────────────────────
+    EXPECT_EQ(refGrid->activeVoxelCount(), nanoGrid->activeVoxelCount());
+
+    // ── Node counts ─────────────────────────────────────────────────────────
+    EXPECT_EQ(refGrid->tree().nodeCount(0), nanoGrid->tree().nodeCount(0));// leaf
+    EXPECT_EQ(refGrid->tree().nodeCount(1), nanoGrid->tree().nodeCount(1));// lower
+    EXPECT_EQ(refGrid->tree().nodeCount(2), nanoGrid->tree().nodeCount(2));// upper
+
+    // ── Per-voxel values: compare every active voxel ────────────────────────
+    // Use OpenVDB as the ground truth, NanoVDB as the result under test.
+    openvdb::FloatGrid::ConstAccessor srcAcc = srcGrid->getConstAccessor();
+    auto nanoAcc = nanoGrid->getAccessor();
+    uint64_t checked = 0;
+    for (auto iter = srcGrid->cbeginValueOn(); iter; ++iter) {
+        const openvdb::Coord ijk = iter.getCoord();
+        const float expected = *iter;
+        const float actual   = nanoAcc.getValue(
+            nanovdb::Coord(ijk.x(), ijk.y(), ijk.z()));
+        EXPECT_NEAR(expected, actual, 1e-6f)
+            << "mismatch at (" << ijk.x() << "," << ijk.y() << "," << ijk.z() << ")";
+        ++checked;
+        if (checked >= 10000) break; // cap to keep the test fast
+    }
+    EXPECT_GT(checked, 0u);
+
+    // ── Per-leaf min/max: match leaves by origin coordinate ────────────────
+    // We cannot compare by array index because BFS and NodeManager may order
+    // leaves differently; matching by origin is order-independent.
+    {
+        auto nmHandle = nanovdb::createNodeManager(*nanoGrid);
+        const auto* nm = nmHandle.template mgr<float>();
+        ASSERT_TRUE(nm);
+        const uint32_t nLeaves = nanoGrid->tree().nodeCount(0);
+        // Build a coord→stats map from the reference grid
+        std::unordered_map<uint64_t, std::pair<float,float>> refStats;
+        auto refNmHandle = nanovdb::createNodeManager(*refGrid);
+        const auto* refNm = refNmHandle.template mgr<float>();
+        ASSERT_TRUE(refNm);
+        for (uint32_t i = 0; i < refGrid->tree().nodeCount(0); ++i) {
+            const auto& lf = refNm->leaf(i);
+            const auto& o  = lf.origin();
+            uint64_t key = (uint64_t(uint32_t(o[0])) << 42) |
+                           (uint64_t(uint32_t(o[1])) << 21) |
+                            uint64_t(uint32_t(o[2]));
+            refStats[key] = {lf.minimum(), lf.maximum()};
+        }
+        // Compare our leaves against the reference map
+        for (uint32_t i = 0; i < nLeaves; ++i) {
+            const auto& lf = nm->leaf(i);
+            const auto& o  = lf.origin();
+            uint64_t key = (uint64_t(uint32_t(o[0])) << 42) |
+                           (uint64_t(uint32_t(o[1])) << 21) |
+                            uint64_t(uint32_t(o[2]));
+            auto it = refStats.find(key);
+            ASSERT_NE(it, refStats.end()) << "leaf origin not found in reference";
+            EXPECT_EQ(it->second.first,  lf.minimum());
+            EXPECT_EQ(it->second.second, lf.maximum());
+        }
+    }
+
+    // ── Background value ────────────────────────────────────────────────────
+    EXPECT_NEAR(refGrid->tree().background(),
+                nanoGrid->tree().background(), 1e-6f);
+
+    std::remove(vdbPath.c_str());
+}
+
+TEST_F(TestOpenVDB, OpenFileToNanoGrid_FogVolume)
+{
+    // Build a sparse float fog volume with a few scattered active voxels
+    openvdb::FloatGrid::Ptr srcGrid = openvdb::FloatGrid::create(0.0f);
+    srcGrid->setName("fog");
+    srcGrid->setGridClass(openvdb::GRID_FOG_VOLUME);
+    srcGrid->setTransform(
+        openvdb::math::Transform::createLinearTransform(0.5)); // 0.5 voxel size
+
+    auto acc = srcGrid->getAccessor();
+    for (int i = -10; i <= 10; ++i)
+        for (int j = -10; j <= 10; ++j)
+            acc.setValue(openvdb::Coord(i, j, 0), float(i * i + j * j) * 0.01f);
+
+    const std::string vdbPath = "data/test_opentonano_fog.vdb";
+    {
+        openvdb::io::File f(vdbPath);
+        f.write({srcGrid});
+        f.close();
+    }
+
+    auto handle = nanovdb::tools::openFileToNanoGrid<openvdb::FloatGrid>(vdbPath);
+    auto* nanoGrid = handle.grid<float>();
+    ASSERT_TRUE(nanoGrid);
+
+    // Grid class and type
+    EXPECT_EQ(nanovdb::GridClass::FogVolume, nanoGrid->gridClass());
+    EXPECT_EQ(nanovdb::GridType::Float,      nanoGrid->gridType());
+    EXPECT_EQ(std::string("fog"),            nanoGrid->gridName());
+
+    // Active voxel count must match source
+    EXPECT_EQ(srcGrid->activeVoxelCount(), nanoGrid->activeVoxelCount());
+
+    // Verify every active voxel value
+    openvdb::FloatGrid::ConstAccessor srcAcc = srcGrid->getConstAccessor();
+    auto nanoAcc = nanoGrid->getAccessor();
+    for (auto iter = srcGrid->cbeginValueOn(); iter; ++iter) {
+        const openvdb::Coord ijk = iter.getCoord();
+        EXPECT_NEAR(*iter,
+                    nanoAcc.getValue(nanovdb::Coord(ijk.x(), ijk.y(), ijk.z())),
+                    1e-6f);
+    }
+
+    // Inactive voxels (background) should return 0
+    EXPECT_NEAR(0.0f, nanoAcc.getValue(nanovdb::Coord(999, 999, 999)), 1e-6f);
+
+    // Voxel size from transform should be preserved
+    EXPECT_NEAR(0.5, nanoGrid->voxelSize()[0], 1e-9);
+
+    std::remove(vdbPath.c_str());
+}
+
+TEST_F(TestOpenVDB, OpenFileToNanoGrid_NonTrivialTransform)
+{
+    // Grid with a non-uniform translation (tests that the affine map round-trips)
+    openvdb::FloatGrid::Ptr srcGrid = openvdb::FloatGrid::create(0.0f);
+    srcGrid->setName("translated");
+    openvdb::math::Mat4d mat = openvdb::math::Mat4d::identity();
+    mat.setTranslation(openvdb::math::Vec3d(10.0, 20.0, 30.0));
+    mat[0][0] = mat[1][1] = mat[2][2] = 2.0; // voxel size = 2
+    srcGrid->setTransform(openvdb::math::Transform::createLinearTransform(mat));
+
+    auto acc = srcGrid->getAccessor();
+    acc.setValue(openvdb::Coord(1, 2, 3), 42.0f);
+    acc.setValue(openvdb::Coord(-5, 0, 7), -1.0f);
+
+    const std::string vdbPath = "data/test_opentonano_xform.vdb";
+    {
+        openvdb::io::File f(vdbPath);
+        f.write({srcGrid});
+        f.close();
+    }
+
+    auto handle = nanovdb::tools::openFileToNanoGrid<openvdb::FloatGrid>(vdbPath);
+    auto* nanoGrid = handle.grid<float>();
+    ASSERT_TRUE(nanoGrid);
+
+    EXPECT_EQ(2u, nanoGrid->activeVoxelCount());
+
+    auto nanoAcc = nanoGrid->getAccessor();
+    EXPECT_NEAR(42.0f,  nanoAcc.getValue(nanovdb::Coord(1,  2, 3)), 1e-6f);
+    EXPECT_NEAR(-1.0f,  nanoAcc.getValue(nanovdb::Coord(-5, 0, 7)), 1e-6f);
+    EXPECT_NEAR(0.0f,   nanoAcc.getValue(nanovdb::Coord(0,  0, 0)), 1e-6f);
+
+    // World-space position of index (0,0,0) should reflect the translation
+    const auto w = nanoGrid->indexToWorldF(nanovdb::Vec3f(0.0f));
+    EXPECT_NEAR(10.0, w[0], 1e-6);
+    EXPECT_NEAR(20.0, w[1], 1e-6);
+    EXPECT_NEAR(30.0, w[2], 1e-6);
+
+    std::remove(vdbPath.c_str());
+}
+
+TEST_F(TestOpenVDB, OpenFileToNanoGrid_GridNameLookup)
+{
+    // Write two grids to one file; verify that the named-grid lookup works
+    auto gridA = openvdb::tools::createLevelSetSphere<openvdb::FloatGrid>(
+        20.0f, openvdb::Vec3f(0), 1.0f, 2.0f);
+    gridA->setName("sphere_A");
+
+    openvdb::FloatGrid::Ptr gridB = openvdb::FloatGrid::create(0.0f);
+    gridB->setName("fog_B");
+    gridB->getAccessor().setValue(openvdb::Coord(0, 0, 0), 1.0f);
+
+    const std::string vdbPath = "data/test_opentonano_named.vdb";
+    {
+        openvdb::io::File f(vdbPath);
+        f.write({gridA, gridB});
+        f.close();
+    }
+
+    // Read the second grid by name
+    auto handle = nanovdb::tools::openFileToNanoGrid<openvdb::FloatGrid>(
+        vdbPath, "fog_B");
+    auto* nanoGrid = handle.grid<float>();
+    ASSERT_TRUE(nanoGrid);
+    EXPECT_EQ(std::string("fog_B"), nanoGrid->gridName());
+    EXPECT_EQ(1u, nanoGrid->activeVoxelCount());
+    EXPECT_NEAR(1.0f,
+                nanoGrid->getAccessor().getValue(nanovdb::Coord(0, 0, 0)),
+                1e-6f);
+
+    // Asking for a non-existent name must throw
+    EXPECT_THROW(
+        nanovdb::tools::openFileToNanoGrid<openvdb::FloatGrid>(vdbPath, "no_such_grid"),
+        std::runtime_error);
+
+    std::remove(vdbPath.c_str());
+}
 
 int main(int argc, char** argv)
 {
