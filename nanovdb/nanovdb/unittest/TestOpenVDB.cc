@@ -3665,27 +3665,23 @@ TEST_F(TestOpenVDB, OpenFileToNanoGrid_LevelSetSphere)
         const auto* nm = nmHandle.template mgr<float>();
         ASSERT_TRUE(nm);
         const uint32_t nLeaves = nanoGrid->tree().nodeCount(0);
-        // Build a coord→stats map from the reference grid
-        std::unordered_map<uint64_t, std::pair<float,float>> refStats;
+        // Build a coord→stats map from the reference grid.
+        // Use std::map<Coord,...> to avoid the hash-collision hazard that arises
+        // when packing signed coordinates into a uint64_t bit-field: for negative
+        // coords the upper bits of uint32_t(coord) overflow into the adjacent
+        // field, causing two different origins to produce the same key.
+        std::map<nanovdb::Coord, std::pair<float,float>> refStats;
         auto refNmHandle = nanovdb::createNodeManager(*refGrid);
         const auto* refNm = refNmHandle.template mgr<float>();
         ASSERT_TRUE(refNm);
         for (uint32_t i = 0; i < refGrid->tree().nodeCount(0); ++i) {
             const auto& lf = refNm->leaf(i);
-            const auto& o  = lf.origin();
-            uint64_t key = (uint64_t(uint32_t(o[0])) << 42) |
-                           (uint64_t(uint32_t(o[1])) << 21) |
-                            uint64_t(uint32_t(o[2]));
-            refStats[key] = {lf.minimum(), lf.maximum()};
+            refStats[lf.origin()] = {lf.minimum(), lf.maximum()};
         }
         // Compare our leaves against the reference map
         for (uint32_t i = 0; i < nLeaves; ++i) {
             const auto& lf = nm->leaf(i);
-            const auto& o  = lf.origin();
-            uint64_t key = (uint64_t(uint32_t(o[0])) << 42) |
-                           (uint64_t(uint32_t(o[1])) << 21) |
-                            uint64_t(uint32_t(o[2]));
-            auto it = refStats.find(key);
+            auto it = refStats.find(lf.origin());
             ASSERT_NE(it, refStats.end()) << "leaf origin not found in reference";
             EXPECT_EQ(it->second.first,  lf.minimum());
             EXPECT_EQ(it->second.second, lf.maximum());

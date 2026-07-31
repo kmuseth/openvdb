@@ -121,7 +121,12 @@ public:
                     "OpenFileToNanoGrid: no grids found in '" + filePath + "'");
             baseGrid = file.readGrid(*nameIt);
         } else {
-            baseGrid = file.readGrid(gridName);
+            try {
+                baseGrid = file.readGrid(gridName);
+            } catch (const std::exception&) {
+                throw std::runtime_error(
+                    "OpenFileToNanoGrid: grid '" + gridName + "' not found in '" + filePath + "'");
+            }
             if (!baseGrid)
                 throw std::runtime_error(
                     "OpenFileToNanoGrid: grid '" + gridName + "' not found in '" + filePath + "'");
@@ -565,7 +570,12 @@ public:
                     "OpenFileToNanoGrid: no grids found in '" + filePath + "'");
             baseGrid = file.readGrid(*nameIt);
         } else {
-            baseGrid = file.readGrid(gridName);
+            try {
+                baseGrid = file.readGrid(gridName);
+            } catch (const std::exception&) {
+                throw std::runtime_error(
+                    "OpenFileToNanoGrid: grid '" + gridName + "' not found in '" + filePath + "'");
+            }
             if (!baseGrid)
                 throw std::runtime_error(
                     "OpenFileToNanoGrid: grid '" + gridName + "' not found in '" + filePath + "'");
