@@ -3,12 +3,14 @@
 
 /// @file OpenFileToNanoGrid.h
 ///
+/// @author Ken Museth
+///
 /// @brief Reads a named grid directly from an OpenVDB .vdb file into a
 ///        NanoVDB GridHandle<BufferT> without first building a fully loaded
 ///        openvdb::Grid in memory.
 ///
 /// The name distinguishes this from CreateNanoGrid.h, which converts an
-/// already-loaded openvdb::Grid.  Here the source is a file on disk, and
+/// already-loaded openvdb::Grid. Here the source is a file on disk, and
 /// the implementation avoids materialising the full OpenVDB grid before
 /// building the NanoVDB buffer.
 ///
@@ -40,7 +42,7 @@
 /// -----------
 ///  OpenVDB topology  +  NanoVDB buffer  +  incremental leaf value loads
 ///
-///  This contrasts with the traditional path:
+///  This contrasts with the approach in CreateNanoGrid.h, which requires the entire source openvdb::Grid to be fully loaded in memory, i.e.
 ///    full openvdb::Grid  +  full NanoVDB buffer  (both simultaneously).
 
 #ifndef NANOVDB_TOOLS_OPEN_FILE_TO_NANO_GRID_H_HAS_BEEN_INCLUDED
@@ -65,8 +67,74 @@
 #include <unordered_map>
 #include <vector>
 
-namespace nanovdb {
-namespace tools {
+namespace nanovdb {// ============================================================================
+
+namespace tools {// ==============================================================================
+
+// Forward declarations of implementation classes (defined below)
+namespace detail {
+template<typename SrcGridT, typename DstBuildT, typename BufferT> class OpenFileToNanoGridImpl;
+template<typename SrcGridT, typename DstBuildT, typename BufferT> class OpenFileToNanoIndexImpl;
+}// namespace detail
+
+//================================================================================================
+
+/// @brief Forward declaration of free-standing function that converts a grid in an OpenVDB file
+///        into a NanoVDB GridHandle, without first loading a full openvdb::Grid into memory
+/// @tparam SrcGridT Type of the source grid in the file, e.g. openvdb::FloatGrid
+/// @tparam DstBuildT Type of values in the output (destination) nanovdb Grid, e.g. float
+/// @tparam BufferT Type of the buffer used to allocate the destination grid
+/// @param filePath Path to the OpenVDB .vdb file on disk
+/// @param gridName Name of the grid to read. If empty the first grid in the file is used
+/// @param pool Instance of a buffer used for allocation
+/// @return Handle to the destination NanoGrid
+/// @throw std::runtime_error if the file cannot be opened, the grid is not found,
+///        or the type of the grid in the file does not match @c SrcGridT
+template<typename SrcGridT,
+         typename DstBuildT = typename SrcGridT::ValueType,
+         typename BufferT   = HostBuffer>
+GridHandle<BufferT>
+openFileToNanoGrid(const std::string& filePath,
+                   const std::string& gridName = "",
+                   const BufferT&     pool     = BufferT());
+
+//================================================================================================
+
+/// @brief Forward declaration of free-standing function that converts a grid in an OpenVDB file
+///        into a NanoVDB GridHandle with an IndexGrid and sidecar channels of values, without
+///        first loading a full openvdb::Grid into memory
+/// @tparam SrcGridT Type of the source grid in the file, e.g. openvdb::FloatGrid
+/// @tparam DstBuildT Should be either nanovdb::ValueIndex or nanovdb::ValueOnIndex
+/// @tparam BufferT Type of the buffer used to allocate the destination grid
+/// @param filePath Path to the OpenVDB .vdb file on disk
+/// @param gridName Name of the grid to read. If empty the first grid in the file is used
+/// @param channels Number of sidecar channels with the values (active or all) in the source grid
+/// @param includeTiles If true tile values (active or all) are also indexed
+/// @param includeStats If true stats are also indexed
+/// @param pool Instance of a buffer used for allocation
+/// @return Handle to the destination NanoGrid of type IndexGrid or OnIndexGrid
+/// @note Use nanovdb::ChannelAccessor to look up values in the sidecar channels:
+///   @code
+///   auto handle = openFileToNanoIndexGrid<openvdb::FloatGrid>("in.vdb");
+///   auto* grid  = handle.grid<nanovdb::ValueOnIndex>();
+///   nanovdb::ChannelAccessor<float, nanovdb::ValueOnIndex> acc(*grid, 0u);
+///   float v = acc(10, 20, 30);
+///   @endcode
+/// @throw std::runtime_error if the file cannot be opened, the grid is not found,
+///        or the type of the grid in the file does not match @c SrcGridT
+template<typename SrcGridT,
+         typename DstBuildT = ValueOnIndex,
+         typename BufferT   = HostBuffer>
+typename util::enable_if<BuildTraits<DstBuildT>::is_index, GridHandle<BufferT>>::type
+openFileToNanoIndexGrid(const std::string& filePath,
+                        const std::string& gridName     = "",
+                        uint32_t           channels     = 1u,
+                        bool               includeTiles = true,
+                        bool               includeStats = true,
+                        const BufferT&     pool         = BufferT());
+
+//================================================================================================
+
 namespace detail {
 
 // ============================================================================
@@ -117,8 +185,7 @@ public:
             // than calling getGrids(), which would load every grid in the file.
             auto nameIt = file.beginName();
             if (nameIt == file.endName())
-                throw std::runtime_error(
-                    "OpenFileToNanoGrid: no grids found in '" + filePath + "'");
+                throw std::runtime_error("OpenFileToNanoGrid: no grids found in '" + filePath + "'");
             baseGrid = file.readGrid(*nameIt);
         } else {
             try {
@@ -706,8 +773,8 @@ private:
     static void copyMask(const openvdb::util::NodeMask<LOG2DIM>& src,
                          nanovdb::Mask<LOG2DIM>& dst)
     {
-        static_assert(sizeof(src) == sizeof(dst), "mask size mismatch");
-        std::memcpy(&dst, &src, sizeof(dst));
+        static_assert(sizeof(src) == sizeof(dst), "OpenVDB/NanoVDB mask size mismatch");
+        std::memcpy(dst.words(), &src, sizeof(dst));
     }
 
     // ── Assign a channel-array index to every value slot ──────────────────
@@ -910,7 +977,7 @@ private:
         for (uint32_t ch = 0; ch < mChannels; ++ch) {
             auto*    meta  = util::PtrAdd<GridBlindMetaData>(mBufPtr, mOff.meta) + ch;
             uint8_t* blind = mBufPtr + mOff.blind + ch * blindDataSize;
-            std::memset(meta, 0, sizeof(GridBlindMetaData));
+            // no need to zero *meta: the entire buffer was zeroed in read()
             meta->mValueCount = mTotalValues;
             meta->mValueSize  = sizeof(SrcValueT);
             meta->mDataClass  = GridBlindDataClass::ChannelArray;
@@ -1010,91 +1077,30 @@ private:
 } // namespace detail
 
 // ============================================================================
-//  Public API
+//  Definitions of the free-standing functions declared above
 // ============================================================================
 
-/// @brief Read a grid from an OpenVDB .vdb file directly into a NanoVDB
-///        GridHandle, without first building a fully loaded openvdb::Grid.
-///
-/// Unlike createNanoGrid() (which converts an already-loaded openvdb::Grid),
-/// this function reads topology and voxel data incrementally from the file,
-/// keeping peak memory to:  OpenVDB topology + NanoVDB buffer.
-///
-/// @tparam SrcGridT   OpenVDB grid type to read, e.g. openvdb::FloatGrid
-/// @tparam DstBuildT  NanoVDB build/value type (default: SrcGridT::ValueType)
-/// @tparam BufferT    Host buffer type for the returned GridHandle
-///                    (default: nanovdb::HostBuffer)
-///
-/// @param filePath  Path to the .vdb file on disk
-/// @param gridName  Name of the grid to read.  If empty, the first grid in
-///                  the file is used.
-/// @param pool      Optional buffer allocator / memory pool
-///
-/// @return A GridHandle<BufferT> wrapping the NanoVDB grid.
-///
-/// @throw std::runtime_error if the file cannot be opened, the grid is not
-///        found, or the OpenVDB grid type does not match SrcGridT.
-template<typename SrcGridT,
-         typename DstBuildT = typename SrcGridT::ValueType,
-         typename BufferT   = HostBuffer>
+template<typename SrcGridT, typename DstBuildT, typename BufferT>
 GridHandle<BufferT>
 openFileToNanoGrid(const std::string& filePath,
-                   const std::string& gridName = "",
-                   const BufferT&     pool     = BufferT())
+                   const std::string& gridName,
+                   const BufferT&     pool)
 {
     openvdb::initialize();
     detail::OpenFileToNanoGridImpl<SrcGridT, DstBuildT, BufferT> impl;
     return impl.read(filePath, gridName, pool);
 }
 
-/// @brief Read a grid from an OpenVDB .vdb file directly into a NanoVDB
-///        index GridHandle + sidecar value channel(s), without first building
-///        a fully loaded openvdb::Grid.
-///
-/// An index grid stores a dense or sparse mapping from voxel position to an
-/// integer slot in a separate value channel (blind data array).  This layout
-/// lets multiple value channels (float, Vec3f, …) share one topology, and
-/// enables GPU-friendly scatter/gather access via ChannelAccessor<T>.
-///
-/// @tparam SrcGridT   OpenVDB source grid type, e.g. openvdb::FloatGrid
-/// @tparam DstBuildT  Index build type: ValueOnIndex (active voxels only,
-///                    default) or ValueIndex (all 512 voxels per leaf)
-/// @tparam BufferT    Host buffer type (default: nanovdb::HostBuffer)
-///
-/// @param filePath     Path to the .vdb file on disk
-/// @param gridName     Grid to read; empty = first grid in the file
-/// @param channels     Number of sidecar value copies to embed as blind data
-///                     (default 1). Channel 0 holds the original values;
-///                     channels 1..N-1 are identical copies.
-/// @param includeTiles If true, active internal-node tile values are indexed
-///                     in the channel array (default true)
-/// @param includeStats If true, each leaf appends 4 extra channel slots
-///                     (min, max, avg, stddev of its active voxels)
-///                     and sets the hasStats flag on the leaf (default true)
-/// @param pool         Optional buffer allocator / memory pool
-///
-/// @return GridHandle<BufferT> containing the NanoVDB index grid and its
-///         embedded float sidecar channel(s).
-///
-/// @note Use nanovdb::ChannelAccessor<SrcValueT, DstBuildT> to look up values:
-///   @code
-///   auto handle = openFileToNanoIndexGrid<openvdb::FloatGrid>("in.vdb");
-///   auto* grid  = handle.grid<nanovdb::ValueOnIndex>();
-///   nanovdb::ChannelAccessor<float, nanovdb::ValueOnIndex> acc(*grid, 0u);
-///   float v = acc(10, 20, 30);
-///   @endcode
-///
-/// @throw std::runtime_error on file/grid/type errors.
-template<typename SrcGridT,
-         typename DstBuildT = ValueOnIndex,
-         typename BufferT   = HostBuffer>
+//================================================================================================
+
+template<typename SrcGridT, typename DstBuildT, typename BufferT>
 typename util::enable_if<BuildTraits<DstBuildT>::is_index, GridHandle<BufferT>>::type
 openFileToNanoIndexGrid(const std::string& filePath,
-                        const std::string& gridName    = "",
-                        uint32_t           channels    = 1u,
-                        bool               includeTiles = true,
-                        bool               includeStats = true,
-                        const BufferT&     pool         = BufferT())
+                        const std::string& gridName,
+                        uint32_t           channels,
+                        bool               includeTiles,
+                        bool               includeStats,
+                        const BufferT&     pool)
 {
     openvdb::initialize();
     detail::OpenFileToNanoIndexImpl<SrcGridT, DstBuildT, BufferT> impl;
