@@ -3,9 +3,9 @@
 Benchmarks comparing the `NANOVDB_USE_OLD_ACCESSOR` caching behaviour (ON vs OFF)
 and `ReadAccessor<0,1,2>` (full 3-level cache, default) vs `ReadAccessor<0>` (leaf-only cache)
 across access patterns, on CPU (single- and multi-threaded) and GPU.
-Results are collected from three machines: a **laptop**, a **desktop**, and a **workstation**.
-The OLD/NEW comparison for Laptop and Desktop used only `ReadAccessor<0,1,2>`;
-the full accessor-type comparison was run on the Workstation.
+Results are collected from four machines: a **Razer laptop**, another **laptop**, a **desktop**, and a **workstation**.
+The OLD/NEW comparison for the other Laptop and Desktop used only `ReadAccessor<0,1,2>`;
+the full accessor-type comparison (both `<0,1,2>` and `<0>`) was run on the Workstation and the Razer Laptop.
 
 ## What is being measured
 
@@ -90,14 +90,14 @@ empty-space shortcuts, we are measuring genuine node traversal and cache reuse.
 
 ### Hardware / build
 
-Two machines were benchmarked; results for each are in separate sections below.
+Four machines were benchmarked; results for each are in separate sections below.
 
-| | Laptop | Desktop | Workstation |
-|---|---|---|---|
-| CPU | 32 HW threads; TBB `parallel_for`, 4096-coord grains | AMD Ryzen 9 9950X — 16 cores / 32 threads; same TBB settings | AMD Ryzen Threadripper PRO 7975WX — 32 cores / 64 threads; same TBB settings |
-| GPU | NVIDIA RTX 5000 Ada Generation Laptop GPU (SM 8.9); 32-coord chunks/thread, 128 threads/block | NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition (SM 12.0); same CUDA settings | NVIDIA RTX 6000 Ada Generation (SM 8.9, 49 GB); same CUDA settings |
-| Build | Release (`-O3 -DNDEBUG`), C++17 / CUDA 17 | same | same |
-| OLD vs NEW | selected at compile time per target (`-DNANOVDB_USE_OLD_ACCESSOR` vs `-DNANOVDB_NO_OLD_ACCESSOR`) | same | same |
+| | Razer Laptop | Laptop | Desktop | Workstation |
+|---|---|---|---|---|
+| CPU | Intel Core i7-9750H — 6 cores / 12 threads; TBB `parallel_for`, 4096-coord grains | 32 HW threads; TBB `parallel_for`, 4096-coord grains | AMD Ryzen 9 9950X — 16 cores / 32 threads; same TBB settings | AMD Ryzen Threadripper PRO 7975WX — 32 cores / 64 threads; same TBB settings |
+| GPU | NVIDIA Quadro RTX 5000 with Max-Q Design (SM 7.5); 32-coord chunks/thread, 128 threads/block | NVIDIA RTX 5000 Ada Generation Laptop GPU (SM 8.9); 32-coord chunks/thread, 128 threads/block | NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition (SM 12.0); same CUDA settings | NVIDIA RTX 6000 Ada Generation (SM 8.9, 49 GB); same CUDA settings |
+| Build | Release (`-O3 -DNDEBUG`), C++17 / CUDA 17 | same | same | same |
+| OLD vs NEW | selected at compile time per target (`-DNANOVDB_USE_OLD_ACCESSOR` vs `-DNANOVDB_NO_OLD_ACCESSOR`) | same | same | same |
 
 ## Access patterns
 
@@ -340,10 +340,93 @@ The improvement (and regression) from the accessor fix is specific to `ReadAcces
 
 ---
 
-## Cross-machine comparison (Laptop vs Desktop vs Workstation)
+## Results — Razer Laptop (Intel Core i7-9750H / Quadro RTX 5000 Max-Q, SM 7.5)
 
-*Note: Laptop and Desktop data uses `ReadAccessor<0,1,2>` only. Workstation data
-covers both accessor types; the cross-machine comparison below uses `<0,1,2>` for
+Both `ReadAccessor<0,1,2>` and `ReadAccessor<0>` were benchmarked under both OLD and
+NEW compile-time modes. The CPU is a Turing-era mobile part with 6 physical cores / 12 HW
+threads; the GPU is an NVIDIA Quadro RTX 5000 with Max-Q Design (Turing, SM 7.5).
+
+### CPU single-threaded — ns per lookup (latency)
+
+| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
+|---|--:|--:|--:|--:|
+| Sequential | 5.17 | 5.44 | **3.21** | 5.26 |
+| LeafJump | 5.38 | 5.61 | **3.67** | 5.51 |
+| NodeJump | 5.31 | 5.32 | **4.72** | 5.32 |
+| Random | **11.42** | **11.94** | 16.13 | **11.53** |
+| Stencil (ns/lookup) | 5.200 | 5.700 | **2.959** | 5.654 |
+
+### CPU 12-threaded — ns per lookup (throughput)
+
+| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
+|---|--:|--:|--:|--:|
+| Sequential | 1.50 | 1.36 | **0.68** | 1.22 |
+| LeafJump | 1.25 | 1.46 | **0.72** | 1.30 |
+| NodeJump | 1.47 | 1.80 | **1.11** | 1.24 |
+| Random | 1.70 | **1.66** | 2.42 | 1.81 |
+| Stencil (ns/lookup) | 1.553 | 1.462 | **0.738** | 1.314 |
+
+### GPU — ns per lookup (throughput)
+
+| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
+|---|--:|--:|--:|--:|
+| Sequential | 0.302 | 0.309 | 0.344 | **0.283** |
+| LeafJump | 0.293 | 0.302 | 0.336 | **0.277** |
+| NodeJump | 0.261 | 0.268 | 0.275 | **0.248** |
+| Random | 0.363 | 0.378 | 0.388 | **0.345** |
+| Stencil (ns/lookup) | 0.1999 | 0.2098 | **0.0849** | 0.1858 |
+
+### OLD → NEW speedup by accessor type
+
+| Pattern | CPU-1T \<0,1,2\> | CPU-1T \<0\> | CPU-MT \<0,1,2\> | CPU-MT \<0\> | GPU \<0,1,2\> | GPU \<0\> |
+|---|--:|--:|--:|--:|--:|--:|
+| Sequential | **1.61×** | 1.03× | **2.21×** | 1.11× | 0.88× | 1.09× |
+| LeafJump | **1.47×** | 1.02× | **1.74×** | 1.12× | 0.87× | 1.09× |
+| NodeJump | **1.12×** | 1.00× | **1.32×** | 1.45× | 0.95× | 1.08× |
+| Random | 0.71× | 1.04× | 0.70× | 0.92× | 0.94× | 1.10× |
+| **Stencil** | **1.76×** | 1.01× | **2.10×** | 1.11× | **2.35×** | 1.13× |
+
+Key: **`ReadAccessor<0>` is essentially unchanged by OLD→NEW on CPU**, in line with all other
+machines. On the GPU (SM 7.5 Turing), `<0>` shows a small but consistent ~1.09–1.13×
+improvement — an outlier not seen on newer architectures, possibly noise or a compiler
+code-gen difference on this older target.
+
+### Stencil detail — ns per whole 27-neighbour stencil
+
+| Platform | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
+|---|--:|--:|--:|--:|
+| CPU 1 thread | 140.39 | 153.90 | **79.89** | 152.65 |
+| CPU 12 threads | 41.94 | 39.48 | **19.92** | 35.48 |
+| GPU | 5.3960 | 5.6641 | **2.2926** | 5.0156 |
+
+### Best-accessor recommendation (NEW mode, this machine)
+
+| Pattern | Best choice | Why |
+|---|---|---|
+| Sequential | `<0,1,2>` (3.21 ns) | Level-1 cache stays warm between leaf-boundary crossings |
+| LeafJump | `<0,1,2>` (3.67 ns) | Same — level-1 rescues leaf misses |
+| NodeJump | `<0,1,2>` (4.72 ns) | Level-2 cache pays off; slightly faster than `<0>` (5.32 ns) |
+| Random | `<0>` (11.53 ns) | All levels miss; extra checks are pure cost |
+| Stencil | `<0,1,2>` (2.959 ns/lkp) | Boundary neighbours caught by level-1; ~1.91× over `<0>` |
+
+Unlike the Workstation (where NodeJump NEW `<0,1,2>` regressed 2× vs OLD), here the level-2
+cache benefit slightly outweighs the extra check overhead, so `<0,1,2>` remains the right
+choice for NodeJump as well.
+
+### Fair platform comparison — best accessor (NEW), full hardware
+
+| Workload | CPU-1T | CPU-12T | GPU | GPU vs CPU-12T |
+|---|--:|--:|--:|--:|
+| Sequential (`<0,1,2>`) | 3.21 | 0.68 | 0.283 | 2.4× |
+| Random (`<0>`) | 11.53 | 1.81 | 0.345 | 5.2× |
+| Stencil (`<0,1,2>`) | 2.959 | 0.738 | 0.0849 | 8.7× |
+
+---
+
+## Cross-machine comparison (Razer Laptop vs Laptop vs Desktop vs Workstation)
+
+*Note: Laptop and Desktop data uses `ReadAccessor<0,1,2>` only. Workstation and Razer Laptop
+data cover both accessor types; the cross-machine comparison below uses `<0,1,2>` for
 consistency, except where accessor type is the explicit subject.*
 
 ### 1. The stencil win is universal and consistent for \<0,1,2\>
@@ -377,16 +460,19 @@ unusually cheap, or a latency difference in how the two paths are branch-predict
 
 `ReadAccessor<0,1,2>` with NEW, OLD→NEW speedup for point patterns:
 
-| Pattern | Laptop Ada RTX 5000 (SM 8.9) | Workstation Ada RTX 6000 (SM 8.9) | Desktop Blackwell RTX PRO 6000 (SM 12.0) |
-|---|--:|--:|--:|
-| Sequential | 1.00× | **1.21×** | **1.75×** |
-| LeafJump | 1.00× | **1.30×** | **1.75×** |
-| NodeJump | 0.98× | 1.00× | 1.17× |
-| Random | 0.93× | 0.84× | 0.83× |
+| Pattern | Razer Laptop Quadro RTX 5000 (SM 7.5) | Laptop Ada RTX 5000 (SM 8.9) | Workstation Ada RTX 6000 (SM 8.9) | Desktop Blackwell RTX PRO 6000 (SM 12.0) |
+|---|--:|--:|--:|--:|
+| Sequential | 0.88× | 1.00× | **1.21×** | **1.75×** |
+| LeafJump | 0.87× | 1.00× | **1.30×** | **1.75×** |
+| NodeJump | 0.95× | 0.98× | 1.00× | 1.17× |
+| Random | 0.94× | 0.93× | 0.84× | 0.83× |
 
-Both Ada GPUs share SM 8.9 yet differ: RTX 6000 (workstation) extracts 1.21–1.30× for coherent
-patterns while RTX 5000 (laptop) is neutral. Blackwell (SM 12.0) consistently extracts the most.
-`ReadAccessor<0>` with NEW is neutral (≈1.00×) on GPU for all patterns on all machines.
+The Turing GPU (SM 7.5) is the only one to show a consistent *regression* for `<0,1,2>` point
+patterns (0.87–0.95×). Both Ada GPUs share SM 8.9 yet differ: RTX 6000 (workstation) extracts
+1.21–1.30× for coherent patterns while RTX 5000 (laptop) is neutral. Blackwell (SM 12.0)
+consistently extracts the most. `ReadAccessor<0>` with NEW is neutral (≈1.00×) on GPU for
+point patterns on all Ada and Blackwell machines; the Razer Laptop (SM 7.5) shows a small
+~1.09× improvement for `<0>` across all patterns, likely a compiler artefact on this older target.
 
 ### 4. GPU Stencil: only \<0,1,2\> benefits from NEW
 
@@ -395,6 +481,7 @@ patterns while RTX 5000 (laptop) is neutral. Blackwell (SM 12.0) consistently ex
 | Workstation (Ada RTX 6000) | 0.0578 | **0.0269** (2.15×) | 0.0577 (≈1.00×) |
 | Laptop (Ada RTX 5000) | 0.086 | **0.040** (2.17×) | — |
 | Desktop (Blackwell) | 0.0587 | **0.0275** (2.14×) | — |
+| Razer Laptop (Quadro RTX 5000 Max-Q, SM 7.5) | 0.1999 | **0.0849** (2.35×) | 0.1858 (1.13×) |
 
 The stencil GPU speedup is ~2.15× for `<0,1,2>` on all three machines and ~1.00× for `<0>`.
 This confirms the level-1 cache is the source of the gain.
@@ -403,11 +490,11 @@ This confirms the level-1 cache is the source of the gain.
 
 `ReadAccessor<0,1,2>` OLD→NEW, multi-threaded:
 
-| Pattern | Laptop 32T | Desktop 32T | Workstation 64T |
-|---|--:|--:|--:|
-| Sequential | 1.22× | 1.44× | 0.95× |
-| NodeJump | 1.09× | 1.05× | 0.96× |
-| Stencil | **1.68×** | **1.67×** | **1.57×** |
+| Pattern | Razer Laptop 12T | Laptop 32T | Desktop 32T | Workstation 64T |
+|---|--:|--:|--:|--:|
+| Sequential | **2.21×** | 1.22× | 1.44× | 0.95× |
+| NodeJump | **1.32×** | 1.09× | 1.05× | 0.96× |
+| Stencil | **2.10×** | **1.68×** | **1.67×** | **1.57×** |
 
 `ReadAccessor<0>` OLD→NEW is 1.00× (neutral) for all MT patterns on all machines.
 
