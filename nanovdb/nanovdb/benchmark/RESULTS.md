@@ -94,12 +94,12 @@ empty-space shortcuts, we are measuring genuine node traversal and cache reuse.
 
 Five machines were benchmarked; results for each are in separate sections below.
 
-| | Razer Laptop | Dell laptop | Desktop | Workstation |
-|---|---|---|---|---|
-| CPU | Intel Core i7-9750H — 6 cores / 12 threads; TBB `parallel_for`, 4096-coord grains | 32 HW threads; TBB `parallel_for`, 4096-coord grains | AMD Ryzen 9 9950X — 16 cores / 32 threads; same TBB settings | AMD Ryzen Threadripper PRO 7975WX — 32 cores / 64 threads; same TBB settings |
-| GPU | NVIDIA Quadro RTX 5000 with Max-Q Design (SM 7.5); 32-coord chunks/thread, 128 threads/block | NVIDIA RTX 5000 Ada Generation Laptop GPU (SM 8.9); 32-coord chunks/thread, 128 threads/block | NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition (SM 12.0); same CUDA settings | NVIDIA RTX 6000 Ada Generation (SM 8.9, 49 GB); same CUDA settings |
-| Build | Release (`-O3 -DNDEBUG`), C++17 / CUDA 17 | same | same | same |
-| OLD vs NEW | selected at compile time per target (`-DNANOVDB_USE_OLD_ACCESSOR` vs `-DNANOVDB_NO_OLD_ACCESSOR`) | same | same | same |
+| | Razer Laptop | Dell laptop | Desktop | Workstation | MacBook Air M3 |
+|---|---|---|---|---|---|
+| CPU | Intel Core i7-9750H — 6 cores / 12 threads; TBB `parallel_for`, 4096-coord grains | 32 HW threads; TBB `parallel_for`, 4096-coord grains | AMD Ryzen 9 9950X — 16 cores / 32 threads; same TBB settings | AMD Ryzen Threadripper PRO 7975WX — 32 cores / 64 threads; same TBB settings | Apple M3 — 8 cores (4P+4E) / 8 threads; same TBB settings |
+| GPU | NVIDIA Quadro RTX 5000 with Max-Q Design (SM 7.5); 32-coord chunks/thread, 128 threads/block | NVIDIA RTX 5000 Ada Generation Laptop GPU (SM 8.9); 32-coord chunks/thread, 128 threads/block | NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition (SM 12.0); same CUDA settings | NVIDIA RTX 6000 Ada Generation (SM 8.9, 49 GB); same CUDA settings | none (no CUDA on Apple silicon) — CPU only |
+| Build | Release (`-O3 -DNDEBUG`), C++17 / CUDA 17 | same | same | same | Release (`-O3 -DNDEBUG`), C++17 (no CUDA) |
+| OLD vs NEW | selected at compile time per target (`-DNANOVDB_USE_OLD_ACCESSOR` vs `-DNANOVDB_NO_OLD_ACCESSOR`) | same | same | same | same |
 
 ## Access patterns
 
