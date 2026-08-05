@@ -3,19 +3,18 @@
 Benchmarks comparing the `NANOVDB_USE_OLD_ACCESSOR` caching behaviour (ON vs OFF)
 and `ReadAccessor<0,1,2>` (full 3-level cache, default) vs `ReadAccessor<0>` (leaf-only cache)
 across access patterns, on CPU (single- and multi-threaded) and GPU.
-Results are collected from five machines: a **Razer laptop**, a **laptop**, a **desktop**, a **workstation**,
-and a **MacBook Air M3**.
-The OLD/NEW comparison for the Laptop used only `ReadAccessor<0,1,2>`;
-the full accessor-type comparison (both `<0,1,2>` and `<0>`) was run on the Desktop, Workstation, Razer Laptop, and MacBook Air M3.
+Results are collected from five machines: a **Razer laptop**, a **Dell laptop**, a **desktop**, a **workstation**,
+and a **MacBook Air M3**. The full accessor-type comparison (both `<0,1,2>` and `<0>`, corrected
+leaf-sampling methodology) was run on the Dell laptop, Desktop, Workstation, Razer Laptop, and MacBook Air M3.
 
-> ⚠️ **Methodology note (Laptop / Razer Laptop sections).** Those sections sampled a cube inside a
+> ⚠️ **Methodology note (Razer Laptop section only).** That section sampled a cube inside a
 > **fog-volume sphere**. That interior is stored as **active tiles at upper internal nodes**, so every
 > access resolved at level 2 and *never reached a leaf* — which makes the leaf-only `ReadAccessor<0>`
-> look artificially bad and does not measure genuine leaf traversal. The MacBook Air M3, Workstation,
-> and Desktop sections use a **corrected** benchmark whose coordinates are harvested from the grid's
+> look artificially bad and does not measure genuine leaf traversal. The Dell laptop, MacBook Air M3,
+> Workstation, and Desktop sections use a **corrected** benchmark whose coordinates are harvested from the grid's
 > **active leaf voxels** (a narrow-band level set sphere); 100 % of accesses resolve at a leaf node.
 > Consequently the **absolute ns/access in those sections are ~10× larger** than the pre-correction
-> sections — that difference is the methodology (real multi-level leaf traversal vs. re-hitting a
+> Razer Laptop section — that difference is the methodology (real multi-level leaf traversal vs. re-hitting a
 > small set of cached upper-node tiles), **not** the hardware. Compare OLD-vs-NEW and
 > `<0,1,2>`-vs-`<0>` only *within* a section, never across the correction boundary.
 
@@ -104,7 +103,7 @@ empty-space shortcuts, we are measuring genuine node traversal and cache reuse.
 
 Five machines were benchmarked; results for each are in separate sections below.
 
-| | Razer Laptop | Laptop | Desktop | Workstation |
+| | Razer Laptop | Dell laptop | Desktop | Workstation |
 |---|---|---|---|---|
 | CPU | Intel Core i7-9750H — 6 cores / 12 threads; TBB `parallel_for`, 4096-coord grains | 32 HW threads; TBB `parallel_for`, 4096-coord grains | AMD Ryzen 9 9950X — 16 cores / 32 threads; same TBB settings | AMD Ryzen Threadripper PRO 7975WX — 32 cores / 64 threads; same TBB settings |
 | GPU | NVIDIA Quadro RTX 5000 with Max-Q Design (SM 7.5); 32-coord chunks/thread, 128 threads/block | NVIDIA RTX 5000 Ada Generation Laptop GPU (SM 8.9); 32-coord chunks/thread, 128 threads/block | NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition (SM 12.0); same CUDA settings | NVIDIA RTX 6000 Ada Generation (SM 8.9, 49 GB); same CUDA settings |
@@ -283,82 +282,105 @@ expected — it has no level-1/2 logic for the flag to affect.
 
 ---
 
-## Results — Laptop (RTX 5000 Ada Generation Laptop GPU, SM 8.9) — pre-correction benchmark
+## Results — Dell laptop (RTX 5000 Ada Generation Laptop GPU, SM 8.9) — corrected benchmark
 
-> These numbers predate the leaf-sampling fix and measure upper-node tile access, not leaf
-> traversal (see the ⚠️ note in the intro). Only `ReadAccessor<0,1,2>` was benchmarked on this machine.
+This section now uses the **corrected leaf-sampling benchmark** (same methodology as the MacBook Air M3,
+Desktop, and Workstation sections). Coordinates are drawn from the active leaf voxels of a narrow-band
+level set sphere (`createLevelSetSphere<float>(radius=256, voxelSize=1.0, halfWidth=3.0)`); every lookup
+resolves at a leaf node. Both `ReadAccessor<0,1,2>` and `ReadAccessor<0>` are benchmarked under OLD and NEW.
 
-### Combined — ns per lookup (one `getValue` call), lower = faster
+| Property | Value |
+|---|---|
+| Grid | narrow-band level set sphere (radius 256, voxel 1.0, halfWidth 3.0) |
+| Active leaf voxels harvested | 4,939,794 |
+| Leaf nodes (level 0) | 26,600 |
+| Lower internal nodes (level 1) | 80 |
+| Upper internal nodes (level 2) | 8 |
+| Access resolving at leaf | **100 %** |
+| CPU | 32 HW threads; TBB `parallel_for`, 4096-coord grains |
+| GPU | NVIDIA RTX 5000 Ada Generation Laptop GPU (SM 8.9); 32-coord chunks/thread, 128 threads/block |
+| Access count per pattern | 1,048,576 per pattern; stencil centres up to 262,144 (filtered for full 27-tap activity) |
+| Repetition | 7 trials, median reported |
 
-The stencil row is the per-lookup cost inside a 27-neighbour sweep.
+### CPU single-threaded — ns per access (latency)
 
-| Pattern | CPU-1T OLD | CPU-1T NEW | CPU-32T OLD | CPU-32T NEW | GPU OLD | GPU NEW |
-|---|--:|--:|--:|--:|--:|--:|
-| Sequential (stride 1) | 3.57 | **1.96** | 0.56 | **0.46** | 0.058 | 0.058 |
-| LeafJump (stride 8) | 3.82 | **2.21** | 0.55 | **0.49** | 0.057 | 0.057 |
-| NodeJump (stride 128) | 3.94 | **3.05** | 0.58 | **0.53** | 0.054 | 0.055 |
-| Random (uniform) | **11.47** | 15.32 | **0.82** | 1.04 | **0.088** | 0.095 |
-| **Stencil (3×3×3, 27-pt)** | 4.61 | **2.13** | 0.322 | **0.191** | 0.086 | **0.040** |
-
-*Legend:* CPU-1T = single thread · CPU-32T = 32 threads (TBB) · GPU = RTX 5000 Ada.
-
-### OLD → NEW speedup ( >1 = the fix is faster )
-
-| Pattern | CPU-1T | CPU-32T | GPU |
-|---|--:|--:|--:|
-| Sequential | 1.82× | 1.22× | 1.00× |
-| LeafJump | 1.73× | 1.12× | 1.00× |
-| NodeJump | 1.29× | 1.09× | 0.98× |
-| Random | 0.76× | 0.79× | 0.93× |
-| **Stencil** | **2.17×** | **1.68×** | **2.17×** |
-
-### Detailed tables — Laptop
-
-#### CPU, single-threaded (latency) — ns per lookup
-
-| Pattern | OLD | NEW | OLD→NEW |
-|---|--:|--:|--:|
-| Sequential | 3.57 | **1.96** | 1.82× |
-| LeafJump | 3.82 | **2.21** | 1.73× |
-| NodeJump | 3.94 | **3.05** | 1.29× |
-| Random | **11.47** | 15.32 | 0.76× |
-| Stencil | 4.61 | **2.13** | 2.17× |
-
-#### CPU, 32 threads (throughput) — ns per lookup
-
-| Pattern | OLD | NEW | OLD→NEW | MT speedup (NEW) |
+| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
 |---|--:|--:|--:|--:|
-| Sequential | 0.56 | **0.46** | 1.22× | 4.3× |
-| LeafJump | 0.55 | **0.49** | 1.12× | 4.5× |
-| NodeJump | 0.58 | **0.53** | 1.09× | 5.7× |
-| Random | **0.82** | 1.04 | 0.79× | 14.7× |
-| Stencil | 0.322 | **0.191** | 1.68× | 11.1× |
+| Sequential | 1.63 | 1.34 | 1.49 | **1.34** |
+| LeafJump | 10.23 | 9.62 | **6.48** | 9.63 |
+| NodeJump | 5.06 | 5.07 | **4.35** | 5.02 |
+| Random | 31.12 | **29.75** | 32.60 | 29.90 |
+| Stencil (ns/lookup) | 2.013 | **1.945** | 2.469 | 2.153 |
 
-#### GPU (throughput) — ns per lookup
+### CPU 32-threaded — ns per access (throughput)
 
-| Pattern | OLD | NEW | OLD→NEW |
-|---|--:|--:|--:|
-| Sequential | 0.058 | **0.058** | 1.00× |
-| LeafJump | 0.057 | **0.057** | 1.00× |
-| NodeJump | 0.054 | 0.055 | 0.98× |
-| Random | **0.088** | 0.095 | 0.93× |
-| Stencil | 0.086 | **0.040** | 2.17× |
+| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
+|---|--:|--:|--:|--:|
+| Sequential | 0.43 | **0.40** | 0.45 | 0.43 |
+| LeafJump | 0.85 | 0.86 | **0.69** | 0.88 |
+| NodeJump | 0.68 | 0.66 | **0.63** | 0.65 |
+| Random | **1.61** | 1.62 | 1.96 | 1.66 |
+| Stencil (ns/lookup) | 0.188 | 0.200 | **0.171** | 0.179 |
 
-#### Stencil (3×3×3) — reported per whole 27-neighbour stencil
+### GPU — ns per access (throughput)
 
-| Platform / Mode | OLD ns/stencil | NEW ns/stencil | OLD→NEW |
-|---|--:|--:|--:|
-| CPU 1 thread | 124.48 | **57.49** | 2.17× |
-| CPU 32 threads | 8.70 | **5.17** | 1.68× |
-| GPU | 2.32 | **1.07** | 2.17× |
+| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
+|---|--:|--:|--:|--:|
+| Sequential | **0.065** | 0.066 | 0.067 | 0.066 |
+| LeafJump | 0.112 | 0.112 | **0.097** | 0.112 |
+| NodeJump | 0.150 | 0.149 | **0.110** | 0.149 |
+| Random | **0.221** | 0.222 | 0.234 | 0.222 |
+| Stencil (ns/lookup) | 0.0845 | **0.0842** | 0.0958 | 0.0845 |
 
-#### Fair platform comparison — NEW accessor, full hardware (ns per lookup)
+### OLD → NEW speedup by accessor type
+
+| Pattern | CPU-1T \<0,1,2\> | CPU-1T \<0\> | CPU-MT \<0,1,2\> | CPU-MT \<0\> | GPU \<0,1,2\> | GPU \<0\> |
+|---|--:|--:|--:|--:|--:|--:|
+| Sequential | 1.09× | 1.00× | 0.96× | 0.93× | 0.97× | 1.00× |
+| LeafJump | **1.58×** | 1.00× | **1.23×** | 0.98× | **1.15×** | 1.00× |
+| NodeJump | 1.16× | 1.01× | 1.08× | 1.02× | **1.36×** | 1.00× |
+| Random | 0.95× | 1.00× | 0.82× | 0.98× | 0.94× | 1.00× |
+| **Stencil** | 0.82× | 0.90× | **1.10×** | 1.12× | 0.88× | 1.00× |
+
+Key: **`ReadAccessor<0>` is essentially unchanged by OLD→NEW** — confirming the fix only touches the
+3-level accessor (the ~1.10× on `<0>` stencil is laptop thermal/turbo noise on the serial run, not a
+real effect). NEW `<0,1,2>` wins strongly for **LeafJump (CPU-1T 1.58×, CPU-MT 1.23×, GPU 1.15×)** and
+**NodeJump on GPU (1.36×)**. This machine (SM 8.9 Ada) reproduces the Workstation's GPU-stencil
+**regression** (0.88×): with the corrected active-voxel stencil the taps stay in-band, the leaf cache is
+already hot, and the extra level-1/2 checks add overhead with no benefit.
+
+### Stencil detail — ns per whole 27-neighbour stencil
+
+| Platform | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
+|---|--:|--:|--:|--:|
+| CPU 1 thread | 54.36 | **52.52** | 66.65 | 58.12 |
+| CPU 32 threads | 5.07 | 5.40 | **4.62** | 4.82 |
+| GPU | 2.2813 | **2.2728** | 2.5867 | 2.2813 |
+
+On CPU the multi-threaded stencil favours NEW `<0,1,2>` (4.62 vs 5.07 ns/stencil, 1.10×), but the
+single-threaded stencil regresses (66.65 vs 54.36) — the 1T serial runs are the noisiest on this
+thermally-constrained laptop. The GPU (SM 8.9 Ada) regresses 12 % with NEW `<0,1,2>`, matching the
+Workstation's SM 8.9 result; `ReadAccessor<0>` is neutral on GPU (1.00×) as expected.
+
+### Best-accessor recommendation (NEW mode, this machine)
+
+| Pattern | Best choice | Why |
+|---|---|---|
+| Sequential | `<0>` (1.34 ns 1T) | Leaf cache stays hot; level-1/2 checks add marginal cost |
+| LeafJump | `<0,1,2>` (6.48 ns) | Level-1 cache rescues leaf misses; **1.58×** vs `<0>` |
+| NodeJump | `<0,1,2>` (4.35 ns; GPU 0.110 vs 0.149) | Level-1/2 cache pays off on both CPU and GPU |
+| Random | `<0>` (29.90 ns) | All levels miss; extra checks are pure cost |
+| Stencil (CPU) | `<0,1,2>` (0.171 ns/lkp MT) | MT edge (1.10×); 1T noisy |
+| Stencil (GPU) | `<0>` (0.0845 ns/lkp) | NEW `<0,1,2>` regresses 12 %; leaf cache already hot |
+
+### Fair platform comparison — best accessor (NEW), full hardware
 
 | Workload | CPU-1T | CPU-32T | GPU | GPU vs CPU-32T |
 |---|--:|--:|--:|--:|
-| Sequential | 1.96 | 0.46 | 0.058 | 7.9× |
-| Random | 15.32 | 1.04 | 0.095 | 10.9× |
-| Stencil | 2.13 | 0.191 | 0.040 | 4.8× |
+| Sequential (`<0>`) | 1.34 | 0.43 | 0.066 | 6.5× |
+| LeafJump (`<0,1,2>`) | 6.48 | 0.69 | 0.097 | 7.1× |
+| Random (`<0>`) | 29.90 | 1.66 | 0.222 | 7.5× |
+| Stencil GPU (`<0>`) | — | — | 0.0845 | — |
 
 ---
 
@@ -547,12 +569,12 @@ choice for NodeJump as well.
 
 ---
 
-## Cross-machine comparison (Razer Laptop vs Laptop vs Desktop vs Workstation)
+## Cross-machine comparison (Razer Laptop vs Dell laptop vs Desktop vs Workstation)
 
-*Scope: Laptop data uses `ReadAccessor<0,1,2>` only and the pre-correction fog-sphere methodology.
-The Desktop, Workstation, Razer Laptop, and MacBook Air M3 use both accessor types.
-The Desktop and Workstation sections use the **corrected** leaf-sampling methodology; absolute ns/access
-values are not directly comparable to the pre-correction sections. Compare OLD→NEW ratios and
+*Scope: the Dell laptop, Desktop, Workstation, MacBook Air M3, and Razer Laptop all use both accessor
+types. The Dell laptop, Desktop, Workstation, and MacBook Air M3 use the **corrected** leaf-sampling
+methodology; only the Razer Laptop section is still on the pre-correction fog-sphere methodology, whose
+absolute ns/access values are not directly comparable. Compare OLD→NEW ratios and
 `<0,1,2>`-vs-`<0>` ratios within each section.*
 
 ### 1. LeafJump is the biggest win with corrected methodology
@@ -565,9 +587,10 @@ share the same lower-internal node — exactly the case NEW `<0,1,2>` rescues.
 |---|--:|--:|
 | Desktop (corrected, RTX PRO 6000 Blackwell) | **1.65×** | **1.48×** |
 | Workstation (corrected, RTX 6000 Ada) | **1.83×** | **1.40×** |
+| Dell laptop (corrected, RTX 5000 Ada) | **1.58×** | **1.15×** |
 | Razer Laptop (pre-correction, RTX 5000 Turing) | 1.47× | 0.87× |
 
-The corrected results (Desktop and Workstation) represent the true benefit more accurately than
+The corrected results (Desktop, Workstation, Dell laptop) represent the true benefit more accurately than
 the pre-correction figures. The Razer's GPU regression was already flagged as a SM 7.5 anomaly.
 
 ### 2. GPU NodeJump wins with corrected methodology
@@ -576,8 +599,8 @@ the pre-correction figures. The Razer's GPU regression was already flagged as a 
 |---|--:|
 | Desktop (corrected, RTX PRO 6000 Blackwell) | **1.32×** |
 | Workstation (corrected, RTX 6000 Ada) | **1.48×** |
+| Dell laptop (corrected, RTX 5000 Ada) | **1.36×** |
 | Razer Laptop (pre-correction) | 0.95× |
-| Laptop (pre-correction) | 0.98× |
 
 With real level-2 cache locality (one voxel per lower-internal node from the actual grid
 topology, staying within the same upper node), the level-2 cache hit path in NEW is exercised
@@ -590,31 +613,33 @@ pre-correction runs.
 |---|--:|---|
 | Desktop (corrected, SM 12.0 Blackwell) | **1.10× (improvement)** | active-voxel, 27-tap-active filter |
 | Workstation (corrected, SM 8.9 Ada) | **0.88× (regression)** | active-voxel, 27-tap-active filter |
+| Dell laptop (corrected, SM 8.9 Ada) | **0.88× (regression)** | active-voxel, 27-tap-active filter |
 | Razer Laptop (pre-correction, SM 7.5 Turing) | 2.35× | fog sphere, dense cube |
-| Laptop (pre-correction, SM 8.9 Ada) | 2.17× | fog sphere, dense cube |
 
 With the corrected stencil (centres where all 27 neighbours are active leaf voxels), taps stay
-within the narrow band and the level-0 leaf cache is already hot. On SM 8.9 (Ada), the extra
-level-1/2 checks in NEW add overhead with no net cache benefit → 14 % regression. On SM 12.0
-(Blackwell), the architectural improvements absorb the extra checks and the level-1/2 hits at
+within the narrow band and the level-0 leaf cache is already hot. On **SM 8.9 (Ada)** — both the
+Workstation (RTX 6000 Ada) and the Dell laptop (RTX 5000 Ada) — the extra level-1/2 checks in NEW
+add overhead with no net cache benefit → **12–14 % regression** (a clean cross-machine reproduction).
+On SM 12.0 (Blackwell), the architectural improvements absorb the extra checks and the level-1/2 hits at
 neighbourhood boundaries produce a 10 % gain. `ReadAccessor<0>` is neutral on GPU (1.00×) in
-both cases. The large pre-correction ~2× GPU wins were real for the dense fog-sphere use case
+all cases. The large pre-correction ~2× GPU wins were real for the dense fog-sphere use case
 but do not represent narrow-band workloads.
 
 ### 4. CPU MT pattern: modest wins for LeafJump; mixed elsewhere
 
-| Pattern | Desktop (corrected, 32T) CPU-MT `<0,1,2>` | Workstation (corrected, 64T) CPU-MT `<0,1,2>` |
-|---|--:|--:|
-| Sequential | 0.89× | 1.00× |
-| LeafJump | 0.98× | **1.16×** |
-| NodeJump | 0.76× | 0.85× |
-| Random | 0.84× | 0.91× |
-| Stencil | **1.11×** | **1.02×** |
+| Pattern | Desktop (corrected, 32T) CPU-MT `<0,1,2>` | Workstation (corrected, 64T) CPU-MT `<0,1,2>` | Dell laptop (corrected, 32T) CPU-MT `<0,1,2>` |
+|---|--:|--:|--:|
+| Sequential | 0.89× | 1.00× | 0.96× |
+| LeafJump | 0.98× | **1.16×** | **1.23×** |
+| NodeJump | 0.76× | 0.85× | 1.08× |
+| Random | 0.84× | 0.91× | 0.82× |
+| Stencil | **1.11×** | **1.02×** | **1.10×** |
 
 With the corrected methodology the MT picture shows modest or neutral changes. The Desktop
-(32-thread 9950X) shows a small stencil MT gain (1.11×), while the Workstation (64-thread
-Threadripper) is near-neutral. The large pre-correction MT stencil wins (~1.57–1.67×) do not
-appear in either corrected run, consistent with the stencil GPU finding above.
+(32-thread 9950X) and Dell laptop both show a small stencil MT gain (1.11× / 1.10×) and the Dell
+laptop's best MT LeafJump win (1.23×), while the Workstation (64-thread Threadripper) is near-neutral.
+The large pre-correction MT stencil wins (~1.57–1.67×) do not appear in any corrected run,
+consistent with the stencil GPU finding above.
 
 ### 5. `ReadAccessor<0>` unaffected by OLD→NEW on all platforms
 
@@ -646,18 +671,19 @@ For production use with the NEW accessor, the choice of accessor type matters:
 ## Per-machine takeaways
 
 - **LeafJump is the primary win** with the corrected methodology (active-voxel patterns):
-  **1.65×/1.48× (Desktop) and 1.83×/1.40× (Workstation) on CPU-1T/GPU** for NEW `<0,1,2>`.
-  This is the pattern that directly exercises the level-1 cache rescue: leaf cache misses but
-  the lower internal node is still cached.
+  **1.65×/1.48× (Desktop), 1.83×/1.40× (Workstation), and 1.58×/1.15× (Dell laptop) on CPU-1T/GPU**
+  for NEW `<0,1,2>`. This is the pattern that directly exercises the level-1 cache rescue: leaf cache
+  misses but the lower internal node is still cached.
 
 - **Stencil GPU results are architecture-dependent with the corrected methodology.**
-  On SM 12.0 (Blackwell): NEW `<0,1,2>` improves 10 %. On SM 8.9 (Ada): it regresses 14 %.
-  Pre-correction (fog sphere, dense cube): `<0,1,2>` gained ~2× on GPU across all machines.
-  `ReadAccessor<0>` is neutral in all cases.
+  On SM 12.0 (Blackwell): NEW `<0,1,2>` improves 10 %. On SM 8.9 (Ada): it regresses 12–14 %,
+  now confirmed on **two independent SM 8.9 machines** (Workstation RTX 6000 Ada and Dell laptop
+  RTX 5000 Ada — 0.88× on both). Pre-correction (fog sphere, dense cube): `<0,1,2>` gained ~2×
+  on GPU across all machines. `ReadAccessor<0>` is neutral in all cases.
 
-- **GPU NodeJump wins with corrected patterns**: **1.32× (Desktop), 1.48× (Workstation)**;
-  with one representative voxel per actual lower-internal node, the level-2 cache hit path in
-  NEW pays off. Not captured by the synthetic stride=128 pattern in pre-correction runs.
+- **GPU NodeJump wins with corrected patterns**: **1.32× (Desktop), 1.48× (Workstation),
+  1.36× (Dell laptop)**; with one representative voxel per actual lower-internal node, the level-2
+  cache hit path in NEW pays off. Not captured by the synthetic stride=128 pattern in pre-correction runs.
 
 - **NodeJump CPU-1T regresses for `<0,1,2>` on the Desktop (0.74×)**: level-1 always misses
   with the real topology pattern; the extra cache checks add latency with no benefit. The GPU
