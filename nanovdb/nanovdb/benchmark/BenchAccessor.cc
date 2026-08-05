@@ -128,14 +128,14 @@ static double median(FnT trial, int nTrials = 7)
 
 template<typename AccT, typename GridT>
 static void runSuite(const GridT* grid, const char* accLabel, int N,
-                     std::vector<float>& out)
+                     std::vector<float>& out, const bench::Pools& pools)
 {
     const bench::Pattern patterns[] = {
         bench::Pattern::Sequential, bench::Pattern::LeafJump,
         bench::Pattern::NodeJump,   bench::Pattern::Random};
 
     for (auto p : patterns) {
-        auto   coords = bench::makePattern(p, N);
+        auto   coords = bench::makePattern(p, N, pools);
         double ns1 = median([&] { return runTrial1T<AccT>(grid->tree().root(), coords); });
         double nsM = median([&] { return runTrialMT<AccT>(grid, coords, out); });
         std::cout << "  " << std::left << std::setw(14) << bench::name(p)
@@ -145,7 +145,7 @@ static void runSuite(const GridT* grid, const char* accLabel, int N,
                   << std::setw(11) << std::setprecision(1) << (ns1 / nsM) << "x\n";
     }
 
-    auto   centers = bench::makeStencilCenters();
+    auto   centers = bench::makeStencilCenters(pools, grid);
     double ns1 = median([&] { return runStencil1T<AccT>(grid->tree().root(), centers); });
     double nsM = median([&] { return runStencilMT<AccT>(grid, centers, out); });
     std::cout << "  " << std::left << std::setw(14) << "Stencil(27pt)"
@@ -161,14 +161,24 @@ int main()
 {
     std::cout << "=== NanoVDB ReadAccessor CPU benchmark: " << bench::accessorMode() << " ===\n\n";
 
-    auto handle = nanovdb::tools::createFogVolumeSphere<float>(
-        /*radius=*/500.0, /*center=*/{0, 0, 0}, /*voxelSize=*/1.0,
+    // A narrow-band level set sphere: its only active voxels are the band leaves,
+    // so every harvested coordinate resolves at a leaf node (a fog sphere would
+    // store its uniform interior as active tiles at internal nodes, which never
+    // descend into a leaf and make the leaf-only accessor look artificially bad).
+    auto handle = nanovdb::tools::createLevelSetSphere<float>(
+        /*radius=*/256.0, /*center=*/{0, 0, 0}, /*voxelSize=*/1.0,
         /*halfWidth=*/3.0, /*origin=*/{0, 0, 0}, "sphere");
     auto* grid = handle.grid<float>();
     if (!grid) {
         std::cerr << "Failed to create grid\n";
         return 1;
     }
+
+    // Harvest the active leaf voxels once and drive every pattern from them.
+    const bench::Pools pools = bench::harvest(grid);
+    std::cout << "Active leaf voxels: " << pools.all.size()
+              << "   leaf nodes: " << pools.leafReps.size()
+              << "   lower nodes: " << pools.lowerReps.size() << "\n";
 
     const int N = 1 << 20; // 1M accesses per pattern
 
@@ -182,9 +192,9 @@ int main()
     using Acc012 = nanovdb::ReadAccessor<float, 0, 1, 2>;
     using Acc0   = nanovdb::ReadAccessor<float, 0>;
 
-    runSuite<Acc012>(grid, "<0,1,2>", N, out);
+    runSuite<Acc012>(grid, "<0,1,2>", N, out, pools);
     std::cout << "\n";
-    runSuite<Acc0>(grid, "<0>", N, out);
+    runSuite<Acc0>(grid, "<0>", N, out, pools);
 
     return 0;
 }

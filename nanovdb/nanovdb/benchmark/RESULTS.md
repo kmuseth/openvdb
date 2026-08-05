@@ -3,9 +3,21 @@
 Benchmarks comparing the `NANOVDB_USE_OLD_ACCESSOR` caching behaviour (ON vs OFF)
 and `ReadAccessor<0,1,2>` (full 3-level cache, default) vs `ReadAccessor<0>` (leaf-only cache)
 across access patterns, on CPU (single- and multi-threaded) and GPU.
-Results are collected from three machines: a **laptop**, a **desktop**, and a **workstation**.
+Results are collected from four machines: a **laptop**, a **desktop**, a **workstation**,
+and a **MacBook Air M3**.
 The OLD/NEW comparison for Laptop and Desktop used only `ReadAccessor<0,1,2>`;
-the full accessor-type comparison was run on the Workstation.
+the full accessor-type comparison was run on the Workstation and the MacBook Air M3.
+
+> ⚠️ **Methodology correction (MacBook Air M3 section only).** The Laptop / Desktop / Workstation
+> sections sampled a cube inside a **fog-volume sphere**. That interior is stored as **active
+> tiles at upper internal nodes**, so every access resolved at level 2 and *never reached a leaf*
+> — which makes the leaf-only `ReadAccessor<0>` look artificially bad and does not measure genuine
+> leaf traversal. The MacBook Air M3 section uses a **corrected** benchmark whose coordinates are
+> harvested from the grid's **active leaf voxels** (a narrow-band level set sphere); it was verified
+> that 100 % of accesses now resolve at a leaf node. Consequently the **absolute ns/access in the
+> M3 section are ~10× larger** than the pre-correction sections — that difference is the methodology
+> (real multi-MB leaf traversal vs. re-hitting 8 cached upper-node tiles), **not** the hardware.
+> Compare OLD-vs-NEW and `<0,1,2>`-vs-`<0>` only *within* a section, never across the correction.
 
 ## What is being measured
 
@@ -111,7 +123,69 @@ Two machines were benchmarked; results for each are in separate sections below.
 
 ---
 
-## Results — Desktop (AMD Ryzen 9 9950X / RTX PRO 6000 Blackwell, SM 12.0)
+## Results — MacBook Air M3 (Apple M3, 8-core CPU; corrected benchmark, CPU only)
+
+**This is the only section using the corrected leaf-sampling methodology** (see the ⚠️ note above).
+Coordinates are harvested from the active leaf voxels of a narrow-band level set sphere:
+`nanovdb::tools::createLevelSetSphere<float>(radius=256, voxelSize=1.0, halfWidth=3.0)`.
+
+| Property | Value |
+|---|---|
+| Grid | narrow-band level set sphere (radius 256, voxel 1.0, halfWidth 3.0) |
+| Active leaf voxels harvested | 4,939,794 |
+| Leaf nodes (level 0) | 26,600 |
+| Lower internal nodes (level 1) | 80 |
+| Upper internal nodes (level 2) | 8 |
+| Access resolving at leaf (verified) | **100 %** (was 0 % pre-correction) |
+| CPU | Apple M3, 8 HW threads; TBB `parallel_for`, 4096-coord grains |
+| GPU | none (no CUDA on Apple silicon) — CPU only |
+| Build | Release (`-O3 -DNDEBUG`), C++17; each printed figure is the median of 7 trials |
+
+### CPU single-threaded — ns per access (latency)
+
+| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> | OLD→NEW \<0,1,2\> |
+|---|--:|--:|--:|--:|--:|
+| Sequential | 20.98 | 20.35 | **19.79** | 20.04 | 1.06× |
+| LeafJump | 135.47 | 108.52 | **53.17** | 104.53 | **2.55×** |
+| NodeJump | 123.07 | 109.29 | **90.77** | 107.62 | 1.36× |
+| Random | 218.39 | 176.14 | 185.11 | **165.49** | 1.18× |
+| Stencil (ns/lookup) | 52.06 | 47.97 | **40.44** | 47.43 | 1.29× |
+
+### CPU 8-threaded — ns per access (throughput)
+
+| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> | OLD→NEW \<0,1,2\> |
+|---|--:|--:|--:|--:|--:|
+| Sequential | 3.98 | 3.76 | **3.82** | 3.73 | 1.04× |
+| LeafJump | 26.13 | 21.02 | **11.63** | 20.70 | **2.25×** |
+| NodeJump | 26.83 | 20.96 | **18.36** | 20.69 | 1.46× |
+| Random | 34.67 | 30.94 | 37.92 | **28.90** | 0.91× |
+| Stencil (ns/lookup) | 11.51 | 11.36 | **8.79** | 10.05 | 1.31× |
+
+### Stencil detail — ns per whole 27-neighbour stencil
+
+| Mode | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
+|---|--:|--:|--:|--:|
+| CPU 1 thread | 1405.57 | 1295.28 | **1091.88** | 1280.73 |
+| CPU 8 threads | 310.72 | 306.74 | **237.44** | 271.33 |
+
+### Takeaways — MacBook Air M3 (corrected benchmark)
+
+- **`ReadAccessor<0>` is unchanged by OLD→NEW** (within ~1–6 % on every pattern and thread count,
+  i.e. noise). This is the clean control the corrected sampling makes possible — the OLD/NEW flag
+  only touches the multi-level cache chaining in `<0,1,2>`.
+- **`<0,1,2>` NEW wins exactly where multi-level caching applies**: **LeafJump 2.55× (1T) / 2.25×
+  (8T)** — the headline — plus NodeJump 1.36–1.46× and Stencil 1.29–1.31×. Sequential is a tie
+  (access stays within one leaf, which both variants cache).
+- **Random is the one place `<0,1,2>` does not help** (0.91× on 8T; the 1.18× on 1T is inflated
+  because random picks among the clustered narrow-band voxels retain some upper-node locality).
+  For pure scatter, `<0>` remains the better choice — it avoids the extra cache-level checks.
+
+---
+
+## Results — Desktop (AMD Ryzen 9 9950X / RTX PRO 6000 Blackwell, SM 12.0) — ⚠️ pre-correction, to be regenerated
+
+> These numbers predate the leaf-sampling fix and measure upper-node tile access, not leaf
+> traversal (see the ⚠️ note in the intro). To be regenerated with the corrected benchmark.
 
 ### Combined — ns per lookup (one `getValue` call), lower = faster
 
@@ -187,7 +261,10 @@ The stencil row is the per-lookup cost inside a 27-neighbour sweep.
 
 ---
 
-## Results — Laptop (RTX 5000 Ada Generation Laptop GPU, SM 8.9)
+## Results — Laptop (RTX 5000 Ada Generation Laptop GPU, SM 8.9) — ⚠️ pre-correction, to be regenerated
+
+> These numbers predate the leaf-sampling fix and measure upper-node tile access, not leaf
+> traversal (see the ⚠️ note in the intro). To be regenerated with the corrected benchmark.
 
 ### Combined — ns per lookup (one `getValue` call), lower = faster
 
@@ -263,7 +340,10 @@ The stencil row is the per-lookup cost inside a 27-neighbour sweep.
 
 ---
 
-## Results — Workstation (AMD Ryzen Threadripper PRO 7975WX / RTX 6000 Ada, SM 8.9)
+## Results — Workstation (AMD Ryzen Threadripper PRO 7975WX / RTX 6000 Ada, SM 8.9) — ⚠️ pre-correction, to be regenerated
+
+> These numbers predate the leaf-sampling fix and measure upper-node tile access, not leaf
+> traversal (see the ⚠️ note in the intro). To be regenerated with the corrected benchmark.
 
 Both `ReadAccessor<0,1,2>` and `ReadAccessor<0>` were benchmarked on this machine
 under both OLD and NEW compile-time modes. The Laptop and Desktop results (above) used
@@ -340,7 +420,12 @@ The improvement (and regression) from the accessor fix is specific to `ReadAcces
 
 ---
 
-## Cross-machine comparison (Laptop vs Desktop vs Workstation)
+## Cross-machine comparison (Laptop vs Desktop vs Workstation) — ⚠️ pre-correction, to be regenerated
+
+> ⚠️ This entire cross-machine comparison is built from the three **pre-correction** sections
+> (upper-node tile access, not leaf traversal) and excludes the MacBook Air M3. It will be
+> regenerated once the Laptop / Desktop / Workstation numbers are re-collected with the corrected
+> leaf-sampling benchmark.
 
 *Note: Laptop and Desktop data uses `ReadAccessor<0,1,2>` only. Workstation data
 covers both accessor types; the cross-machine comparison below uses `<0,1,2>` for

@@ -159,15 +159,15 @@ static double benchStencil(const nanovdb::NanoGrid<float>* dGrid,
 }
 
 template<typename AccT>
-static void runSuite(const nanovdb::NanoGrid<float>* dGrid, const char* accLabel,
-                     int N, cudaStream_t stream)
+static void runSuite(const nanovdb::NanoGrid<float>* dGrid, const nanovdb::NanoGrid<float>* hGrid,
+                     const char* accLabel, int N, cudaStream_t stream, const bench::Pools& pools)
 {
     const bench::Pattern patterns[] = {
         bench::Pattern::Sequential, bench::Pattern::LeafJump,
         bench::Pattern::NodeJump,   bench::Pattern::Random};
 
     for (auto p : patterns) {
-        auto   coords = bench::makePattern(p, N);
+        auto   coords = bench::makePattern(p, N, pools);
         double ns     = benchPattern<AccT>(dGrid, coords, stream);
         std::cout << "  " << std::left << std::setw(16) << bench::name(p)
                   << std::setw(8) << accLabel
@@ -175,7 +175,7 @@ static void runSuite(const nanovdb::NanoGrid<float>* dGrid, const char* accLabel
                   << " ns/access\n";
     }
 
-    auto   centers = bench::makeStencilCenters();
+    auto   centers = bench::makeStencilCenters(pools, hGrid);
     double ns      = benchStencil<AccT>(dGrid, centers, stream);
     std::cout << "  " << std::left << std::setw(16) << "Stencil(27pt)"
               << std::setw(8) << accLabel
@@ -197,9 +197,22 @@ int main()
     CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
     std::cout << "Device: " << prop.name << " (SM " << prop.major << "." << prop.minor << ")\n";
 
-    auto handle = nanovdb::tools::createFogVolumeSphere<float, nanovdb::cuda::DeviceBuffer>(
-        /*radius=*/500.0, /*center=*/{0, 0, 0}, /*voxelSize=*/1.0,
+    // Narrow-band level set sphere: its only active voxels are the band leaves, so
+    // every harvested coordinate resolves at a leaf node (see BenchPatterns.h).
+    auto handle = nanovdb::tools::createLevelSetSphere<float, nanovdb::cuda::DeviceBuffer>(
+        /*radius=*/256.0, /*center=*/{0, 0, 0}, /*voxelSize=*/1.0,
         /*halfWidth=*/3.0, /*origin=*/{0, 0, 0}, "sphere");
+
+    // Harvest the active leaf voxels from the host grid before uploading.
+    auto* hGrid = handle.grid<float>();
+    if (!hGrid) {
+        std::cerr << "Failed to obtain host grid\n";
+        return 1;
+    }
+    const bench::Pools pools = bench::harvest(hGrid);
+    std::cout << "Active leaf voxels: " << pools.all.size()
+              << "   leaf nodes: " << pools.leafReps.size()
+              << "   lower nodes: " << pools.lowerReps.size() << "\n";
 
     cudaStream_t stream;
     CUDA_CHECK(cudaStreamCreate(&stream));
@@ -221,9 +234,9 @@ int main()
     using Acc012 = nanovdb::ReadAccessor<float, 0, 1, 2>;
     using Acc0   = nanovdb::ReadAccessor<float, 0>;
 
-    runSuite<Acc012>(dGrid, "<0,1,2>", N, stream);
+    runSuite<Acc012>(dGrid, hGrid, "<0,1,2>", N, stream, pools);
     std::cout << "\n";
-    runSuite<Acc0>(dGrid, "<0>", N, stream);
+    runSuite<Acc0>(dGrid, hGrid, "<0>", N, stream, pools);
 
     CUDA_CHECK(cudaStreamDestroy(stream));
     return 0;
