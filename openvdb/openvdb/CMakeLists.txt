@@ -523,6 +523,7 @@ set(OPENVDB_LIBRARY_TOOLS_INCLUDE_FILES
   tools/LevelSetTracker.h
   tools/LevelSetTubes.h
   tools/LevelSetUtil.h
+  tools/MarchingTetrahedra.h
   tools/Mask.h
   tools/Merge.h
   tools/MeshToVolume.h
