@@ -228,6 +228,10 @@ endif()
 target_link_libraries(vdb_test ${OPENVDB_TEST_DEPENDENT_LIBS})
 add_test(NAME vdb_unit_test COMMAND $<TARGET_FILE:vdb_test> -v)
 
+# Standalone mesh extraction benchmark (not a gtest; run manually)
+add_executable(vdb_bench_mesh BenchmarkMeshExtraction.cc)
+target_link_libraries(vdb_bench_mesh ${OPENVDB_LIB})
+
 # For the sanitizers, add the suppression files and additional options
 get_filename_component(PATH_TO_PROJECT_ROOT ${CMAKE_CURRENT_LIST_DIR} DIRECTORY)
 get_filename_component(PATH_TO_PROJECT_ROOT ${PATH_TO_PROJECT_ROOT} DIRECTORY)
