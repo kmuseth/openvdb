@@ -240,7 +240,7 @@ MarchingTetrahedra<GridType>::localCrossing(LocalMesh& mesh, const math::Transfo
 
     // Probe the flat weld table.
     std::size_t slot = hasher(key) & mesh.htMask;
-    for (;;) {
+    while (true) {
         const Index32 g = mesh.htSlots[slot];
         if (g == LocalMesh::HT_EMPTY) break;       // empty slot — new vertex
         if (mesh.keys[g] == key) return g;          // found existing vertex
@@ -564,7 +564,7 @@ MarchingTetrahedra<GridType>::extract(const std::vector<Coord>& cells, double is
                 const uint32_t vi  = binnedIdx[base + bi];
                 const EdgeKey& key = frags[f]->keys[vi];
                 std::size_t slot = hasher(key) & htMask;
-                for (;;) {
+                while (true) {
                     const Index32 g = ht[slot];
                     if (g == EMPTY) {
                         const Index32 li = static_cast<Index32>(pts.size());
@@ -590,8 +590,7 @@ MarchingTetrahedra<GridType>::extract(const std::vector<Coord>& cells, double is
     mPoints.resize(shardOffset[numShards]);
     tbb::parallel_for(std::size_t(0), numShards, [&](std::size_t s) {
         const Index32 off = shardOffset[s];
-        const std::size_t n = shardPts[s].size();
-        for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t i = 0, n = shardPts[s].size(); i < n; ++i)
             mPoints[off + i] = shardPts[s][i];
         // Each (f,vi) in this shard is exclusively owned by shard s → no race.
         for (std::size_t f = 0; f < nFrags; ++f) {
