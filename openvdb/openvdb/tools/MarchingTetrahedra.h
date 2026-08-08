@@ -23,6 +23,35 @@
 ///          function to write the result straight into std::vector lists of
 ///          world-space vertex coordinates and triangle vertex indices (like
 ///          tools::volumeToMesh).
+///
+///          Several aspects of this implementation go beyond the classic algorithm:
+///
+///          - <b>Sparse VDB-aware traversal.</b> Cell candidates are derived
+///            directly from the VDB active voxel set, so only cells that touch
+///            the narrow band (or active region) are visited. Cost is O(active
+///            voxels), not O(bounding-box volume).
+///
+///          - <b>Combinatorially robust winding.</b> Triangle orientation is
+///            determined by the sign of the exact integer-arithmetic 3×3
+///            determinant of the tetrahedron's index-space corners (tetSign),
+///            never from the interpolated floating-point crossing positions.
+///            This keeps winding correct and globally consistent even for the
+///            most slivery tetrahedra produced by the Kuhn decomposition.
+///
+///          - <b>Parallel multi-fragment march.</b> TBB threads each accumulate
+///            an independently welded LocalMesh fragment backed by a flat
+///            open-addressing hash table (O(1) teardown, cache-friendly probing).
+///            The table is pre-sized from the estimated per-thread vertex count
+///            to avoid rehashing during the march.
+///
+///          - <b>Lock-free parallel shard merge.</b> Cross-thread vertex
+///            deduplication uses a two-pass parallel scatter (count → prefix-sum
+///            → fill) to bin all vertices by hash shard, followed by parallel
+///            per-shard dedup and assembly — no global lock, no serial bottleneck.
+///
+/// @see A. Doi and A. Koide, "An Efficient Method of Triangulating Equi-Valued
+///      Surfaces by Using Tetrahedral Cells", IEICE Transactions on Information
+///      and Systems, Vol. E74-D, No. 1, pp. 214-224, January 1991.
 
 #ifndef OPENVDB_TOOLS_MARCHING_TETRAHEDRA_HAS_BEEN_INCLUDED
 #define OPENVDB_TOOLS_MARCHING_TETRAHEDRA_HAS_BEEN_INCLUDED

@@ -53,6 +53,7 @@
 #include <openvdb/tools/PointsToMask.h>
 #include <openvdb/tools/Composite.h>
 #include <openvdb/tools/VolumeToMesh.h>
+#include <openvdb/tools/MarchingCubes.h>
 #include <openvdb/tools/MarchingTetrahedra.h>
 #include <openvdb/tools/GridOperators.h>
 #include <openvdb/tools/GridTransformer.h>
@@ -263,6 +264,7 @@ private:
     /// @brief Convert a volume into an adaptive polygon mesh.
     void volumeToMesh();
     void marchingTetrahedra();
+    void marchingCubes();
 
     /// @brief Create a level-set sphere, i.e. a narrow-band signed distance to a sphere.
     void levelSetSphere();
@@ -793,6 +795,14 @@ void Tool::init()
      {"keep", "", "1|0|true|false", "toggle wether the input VDB is preserved or deleted after the processing"},
      {"name", "", "marchingTets_input", "specify the name of the resulting geometry (by default it's derived from the input VDB)"}},
      [&](){mParser.setDefaults();}, [&](){this->marchingTetrahedra();});
+
+  mParser.addAction(
+     {"marchingCubes", "marchingcubes", "vol2tris33"}, "Convert a scalar volume to a triangle mesh with the topologically correct Marching Cubes 33 algorithm",
+    {{"iso", "0.0", "0.1", "iso-value used to define the implicit surface. Defaults to zero."},
+     {"vdb", "0", "0", "age (i.e. stack index) of the scalar VDB grid to be meshed. Defaults to 0, i.e. most recently inserted VDB."},
+     {"keep", "", "1|0|true|false", "toggle wether the input VDB is preserved or deleted after the processing"},
+     {"name", "", "marchingCubes_input", "specify the name of the resulting geometry (by default it's derived from the input VDB)"}},
+     [&](){mParser.setDefaults();}, [&](){this->marchingCubes();});
 
   mParser.addAction(
      {"ls2mesh", "sdf2mesh"}, "Convert a level set to an adaptive polygon mesh",
@@ -2766,6 +2776,33 @@ void Tool::marchingTetrahedra()
 
   if (mParser.verbose) mTimer.stop();
 }// Tool::marchingTetrahedra
+
+void Tool::marchingCubes()
+{
+  OPENVDB_ASSERT(mParser.getAction().names[0] == "marchingCubes");
+  mParser.printAction();
+  const std::string &action_name = mParser.getAction().names[0];
+  const double iso = mParser.get<float>("iso");
+  const int age = mParser.get<int>("vdb");
+  const bool keep = mParser.get<bool>("keep");
+  std::string grid_name = mParser.get<std::string>("name");
+
+  auto it = this->getGrid(age);// will throw if grid doesn't exist
+  GridT::Ptr grid = gridPtrCast<GridT>(*it);
+  if (!grid) throw std::invalid_argument("no FloatGrid with age " + std::to_string(age));
+
+  if (mParser.verbose) mTimer.start(action_name);
+
+  Geometry::Ptr geom(new Geometry());
+  tools::marchingCubes(*grid, geom->vtx(), geom->tri(), iso);
+
+  if (!keep) mGrid.erase(std::next(it).base());
+  if (grid_name.empty()) grid_name = action_name + "_" + grid->getName();
+  geom->setName(grid_name);
+  mGeom.push_back(geom);
+
+  if (mParser.verbose) mTimer.stop();
+}// Tool::marchingCubes
 
 // ==============================================================================================================
 

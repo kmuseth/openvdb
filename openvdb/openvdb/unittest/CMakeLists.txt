@@ -126,6 +126,7 @@ else()
     TestLevelSetUtil.cc
     TestLinearInterp.cc
     TestMaps.cc
+    TestMarchingCubes.cc
     TestMarchingTetrahedra.cc
     TestMat4Metadata.cc
     TestMath.cc
