@@ -263,8 +263,6 @@ private:
 
     /// @brief Convert a volume into an adaptive polygon mesh.
     void volumeToMesh();
-    void marchingTetrahedra();
-    void marchingCubes();
 
     /// @brief Create a level-set sphere, i.e. a narrow-band signed distance to a sphere.
     void levelSetSphere();
@@ -789,28 +787,13 @@ void Tool::init()
      [&](){mParser.setDefaults();}, [&](){this->volumeToMesh();});
 
   mParser.addAction(
-     {"marchingTets", "marchingtets", "vol2tris"}, "Convert a scalar volume to a triangle mesh with the classic Marching Tetrahedra algorithm",
-    {{"iso", "0.0", "0.1", "iso-value used to define the implicit surface. Defaults to zero."},
-     {"vdb", "0", "0", "age (i.e. stack index) of the scalar VDB grid to be meshed. Defaults to 0, i.e. most recently inserted VDB."},
-     {"keep", "", "1|0|true|false", "toggle wether the input VDB is preserved or deleted after the processing"},
-     {"name", "", "marchingTets_input", "specify the name of the resulting geometry (by default it's derived from the input VDB)"}},
-     [&](){mParser.setDefaults();}, [&](){this->marchingTetrahedra();});
-
-  mParser.addAction(
-     {"marchingCubes", "marchingcubes", "vol2tris33"}, "Convert a scalar volume to a triangle mesh with the topologically correct Marching Cubes 33 algorithm",
-    {{"iso", "0.0", "0.1", "iso-value used to define the implicit surface. Defaults to zero."},
-     {"vdb", "0", "0", "age (i.e. stack index) of the scalar VDB grid to be meshed. Defaults to 0, i.e. most recently inserted VDB."},
-     {"keep", "", "1|0|true|false", "toggle wether the input VDB is preserved or deleted after the processing"},
-     {"name", "", "marchingCubes_input", "specify the name of the resulting geometry (by default it's derived from the input VDB)"}},
-     [&](){mParser.setDefaults();}, [&](){this->marchingCubes();});
-
-  mParser.addAction(
-     {"ls2mesh", "sdf2mesh"}, "Convert a level set to an adaptive polygon mesh",
-    {{"adapt", "0.0", "0.005", "normalized metric for the adaptive meshing. 0 is uniform and 1 is extreme adaptivity. Defaults to 0."},
+     {"ls2mesh", "sdf2mesh"}, "Convert a level set to a polygon mesh",
+    {{"algo", "dmc", "dmc|mc|mt",  "meshing algorithm: dmc=Dual Marching Cubes (default), mc=Marching Cubes 33, mt=Marching Tetrahedra."},
+     {"adapt", "0.0", "0.005", "normalized metric for the adaptive meshing. 0 is uniform and 1 is extreme adaptivity. Defaults to 0. Ignored when algo=mc or algo=mt."},
      {"iso", "0.0", "0.1", "iso-value used to define the implicit surface. Defaults to zero."},
      {"vdb", "0", "0", "age (i.e. stack index) of the level set VDB grid to be meshed. Defaults to 0, i.e. most recently inserted VDB."},
-     {"mask","-1", "1", "age (i.e. stack index) of the level set VDB grid used as a surface mask during meshing. Defaults to -1, i.e. it's disabled."},
-     {"invert", "false", "1|0|true|false", "boolean toggle to mesh the complement of the mask. Defaults to false and ignored if no mask is specified."},
+     {"mask","-1", "1", "age (i.e. stack index) of the level set VDB grid used as a surface mask during meshing. Defaults to -1, i.e. it's disabled. Ignored when algo=mc or algo=mt."},
+     {"invert", "false", "1|0|true|false", "boolean toggle to mesh the complement of the mask. Defaults to false and ignored if no mask is specified or algo=mc or algo=mt."},
      {"keep", "", "1|0|true|false", "toggle wether the input VDB is preserved or deleted after the processing. The mask is never removed!"},
      {"name", "", "ls2mesh_input", "specify the name of the resulting vdb (by default it's derived from the input VDB)"}},
      [&](){mParser.setDefaults();}, [&](){this->volumeToMesh();});
@@ -2713,6 +2696,12 @@ void Tool::volumeToMesh()
   const bool keep = mParser.get<bool>("keep");
   std::string grid_name = mParser.get<std::string>("name");
 
+  // algo option is only registered on ls2mesh; other actions default to dmc
+  std::string algo = "dmc";
+  if (mode == 1) algo = mParser.get<std::string>("algo");
+  if (algo != "dmc" && algo != "mc" && algo != "mt")
+    throw std::invalid_argument("ls2mesh: unknown algo \"" + algo + "\"; valid values are dmc, mc, mt");
+
   auto it = this->getGrid(age);// will throw if grid doesn't exist
   GridT::Ptr grid = gridPtrCast<GridT>(*it);
   if (!grid) throw std::invalid_argument("no FloatGrid with age " + std::to_string(age));
@@ -2722,23 +2711,33 @@ void Tool::volumeToMesh()
     throw std::invalid_argument("no fog volume with age "+std::to_string(age));
   }
 
-  if (mParser.verbose) mTimer.start(action_name);
+  const std::string timer_label = (mode == 1) ? action_name + "(" + algo + ")" : action_name;
+  if (mParser.verbose) mTimer.start(timer_label);
 
-  tools::VolumeToMesh mesher(iso, adaptivity, /*relaxDisorientedTriangles*/true);
-  if (mask >= 0) {
-    auto base = *this->getGrid(mask);// might throw
-    if (base->isType<BoolGrid>()) {
-      mesher.setSurfaceMask(base, invert);
-    } else if (base->isType<FloatGrid>()) {
-      mesher.setSurfaceMask(tools::interiorMask(*gridPtrCast<FloatGrid>(base), 0.0), invert);
-    } else if (base->isType<Vec3fGrid>()) {
-      mesher.setSurfaceMask(tools::interiorMask(*gridPtrCast<Vec3fGrid>(base)), invert);
-    } else {
-      throw std::invalid_argument("unsupported mask type with age "+std::to_string(mask));
+  Geometry::Ptr geom;
+  if (algo == "mc") {
+    geom.reset(new Geometry());
+    tools::marchingCubes(*grid, geom->vtx(), geom->tri(), iso);
+  } else if (algo == "mt") {
+    geom.reset(new Geometry());
+    tools::marchingTetrahedra(*grid, geom->vtx(), geom->tri(), iso);
+  } else {// dmc
+    tools::VolumeToMesh mesher(iso, adaptivity, /*relaxDisorientedTriangles*/true);
+    if (mask >= 0) {
+      auto base = *this->getGrid(mask);// might throw
+      if (base->isType<BoolGrid>()) {
+        mesher.setSurfaceMask(base, invert);
+      } else if (base->isType<FloatGrid>()) {
+        mesher.setSurfaceMask(tools::interiorMask(*gridPtrCast<FloatGrid>(base), 0.0), invert);
+      } else if (base->isType<Vec3fGrid>()) {
+        mesher.setSurfaceMask(tools::interiorMask(*gridPtrCast<Vec3fGrid>(base)), invert);
+      } else {
+        throw std::invalid_argument("unsupported mask type with age "+std::to_string(mask));
+      }
     }
+    mesher(*grid);
+    geom = this->mesherToGeometry(mesher);
   }
-  mesher(*grid);
-  Geometry::Ptr geom = this->mesherToGeometry(mesher);
 
   if (!keep) mGrid.erase(std::next(it).base());
   if (grid_name.empty()) grid_name = action_name + "_" + grid->getName();
@@ -2747,62 +2746,6 @@ void Tool::volumeToMesh()
 
   if (mParser.verbose) mTimer.stop();
 }// Tool::volumeToMesh
-
-// ==============================================================================================================
-
-void Tool::marchingTetrahedra()
-{
-  OPENVDB_ASSERT(mParser.getAction().names[0] == "marchingTets");
-  mParser.printAction();
-  const std::string &action_name = mParser.getAction().names[0];
-  const double iso = mParser.get<float>("iso");
-  const int age = mParser.get<int>("vdb");
-  const bool keep = mParser.get<bool>("keep");
-  std::string grid_name = mParser.get<std::string>("name");
-
-  auto it = this->getGrid(age);// will throw if grid doesn't exist
-  GridT::Ptr grid = gridPtrCast<GridT>(*it);
-  if (!grid) throw std::invalid_argument("no FloatGrid with age " + std::to_string(age));
-
-  if (mParser.verbose) mTimer.start(action_name);
-
-  Geometry::Ptr geom(new Geometry());
-  tools::marchingTetrahedra(*grid, geom->vtx(), geom->tri(), iso);
-
-  if (!keep) mGrid.erase(std::next(it).base());
-  if (grid_name.empty()) grid_name = action_name + "_" + grid->getName();
-  geom->setName(grid_name);
-  mGeom.push_back(geom);
-
-  if (mParser.verbose) mTimer.stop();
-}// Tool::marchingTetrahedra
-
-void Tool::marchingCubes()
-{
-  OPENVDB_ASSERT(mParser.getAction().names[0] == "marchingCubes");
-  mParser.printAction();
-  const std::string &action_name = mParser.getAction().names[0];
-  const double iso = mParser.get<float>("iso");
-  const int age = mParser.get<int>("vdb");
-  const bool keep = mParser.get<bool>("keep");
-  std::string grid_name = mParser.get<std::string>("name");
-
-  auto it = this->getGrid(age);// will throw if grid doesn't exist
-  GridT::Ptr grid = gridPtrCast<GridT>(*it);
-  if (!grid) throw std::invalid_argument("no FloatGrid with age " + std::to_string(age));
-
-  if (mParser.verbose) mTimer.start(action_name);
-
-  Geometry::Ptr geom(new Geometry());
-  tools::marchingCubes(*grid, geom->vtx(), geom->tri(), iso);
-
-  if (!keep) mGrid.erase(std::next(it).base());
-  if (grid_name.empty()) grid_name = action_name + "_" + grid->getName();
-  geom->setName(grid_name);
-  mGeom.push_back(geom);
-
-  if (mParser.verbose) mTimer.stop();
-}// Tool::marchingCubes
 
 // ==============================================================================================================
 

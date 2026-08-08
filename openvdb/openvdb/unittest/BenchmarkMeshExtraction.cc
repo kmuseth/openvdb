@@ -1,10 +1,11 @@
 // Copyright Contributors to the OpenVDB Project
 // SPDX-License-Identifier: Apache-2.0
 
-// Benchmark: marchingTetrahedra vs volumeToMesh
+// Benchmark: marchingTetrahedra vs marchingCubes vs volumeToMesh
 //
 // Usage: vdb_bench_mesh [--runs N] [--radii r0,r1,...] [--voxel v]
 
+#include <openvdb/tools/MarchingCubes.h>
 #include <openvdb/tools/MarchingTetrahedra.h>
 #include <openvdb/tools/VolumeToMesh.h>
 #include <openvdb/tools/LevelSetSphere.h>
@@ -139,6 +140,15 @@ int main(int argc, char** argv)
         });
         printRow("marchingTetrahedra", resultsMT, std::cout);
 
+        // --- marchingCubes ---
+        auto resultsMC = bench(runs, [&]() -> RunResult {
+            std::vector<Vec3s> pts;
+            std::vector<Vec3I> tris;
+            tools::marchingCubes(*grid, pts, tris, 0.0);
+            return {0.0, pts.size(), tris.size()};
+        });
+        printRow("marchingCubes", resultsMC, std::cout);
+
         // --- volumeToMesh (quads only, no adaptivity) ---
         auto resultsV2M = bench(runs, [&]() -> RunResult {
             std::vector<Vec3s> pts;
@@ -158,10 +168,13 @@ int main(int argc, char** argv)
         });
         printRow("volumeToMesh (tris+quads)", resultsV2Ma, std::cout);
 
-        // Speedup
-        const double speedup = mean(resultsV2M) / mean(resultsMT);
-        std::cout << "  speedup marchingTetrahedra vs volumeToMesh(quads): "
-                  << std::fixed << std::setprecision(2) << speedup << "x\n";
+        // Speedup ratios relative to volumeToMesh(quads)
+        const double refMs   = mean(resultsV2M);
+        const double speedMT = refMs / mean(resultsMT);
+        const double speedMC = refMs / mean(resultsMC);
+        std::cout << "  speedup vs volumeToMesh(quads):"
+                  << "  marchingTetrahedra=" << std::fixed << std::setprecision(2) << speedMT << "x"
+                  << "  marchingCubes="      << std::fixed << std::setprecision(2) << speedMC << "x\n";
     }
 
     std::cout << "\nDone.\n";
