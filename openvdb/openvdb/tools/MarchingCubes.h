@@ -56,10 +56,13 @@
 #include <tbb/enumerable_thread_specific.h>
 #include <tbb/parallel_for.h>
 
+#include <openvdb/util/CpuTimer.h>
+
 #include <algorithm>
 #include <cmath>      // for std::signbit
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <type_traits>
 #include <utility>    // for std::pair
 #include <vector>
@@ -241,13 +244,17 @@ private:
         double isovalue, const Coord& origin, const Coord corner[8],
         const ValueType value[8]);
 
-    /// @brief Collect the origins of every cell that may contain the isosurface
-    ///        (a cell with at least one active corner). Independent of isovalue.
-    void gatherCells(std::vector<Coord>& cells) const;
+    using MaskLeaf = MaskGrid::TreeType::LeafNodeType;
 
-    /// @brief March the given cells (in parallel) and merge the result into
-    ///        mPoints / mTriangles.
-    void extract(const std::vector<Coord>& cells, double isovalue);
+    /// @brief Build a MaskGrid whose active voxels are the origins of every
+    ///        candidate cell, and populate @a masterLeaves with pointers into
+    ///        that grid's leaves. The returned MaskGrid must stay alive as long
+    ///        as @a masterLeaves is used.
+    MaskGrid::Ptr gatherCells(std::vector<const MaskLeaf*>& masterLeaves) const;
+
+    /// @brief March the given master leaves (in parallel) and merge the result
+    ///        into mPoints / mTriangles.
+    void extract(const std::vector<const MaskLeaf*>& masterLeaves, double isovalue);
 
     const GridType&    mGrid;
     std::vector<Vec3s> mPoints;
@@ -811,26 +818,23 @@ MarchingCubes<GridType>::marchCell(LocalMesh& mesh, const math::Transform& xform
 
 
 template<typename GridType>
-void
-MarchingCubes<GridType>::gatherCells(std::vector<Coord>& cells) const
+MaskGrid::Ptr
+MarchingCubes<GridType>::gatherCells(std::vector<const MaskLeaf*>& masterLeaves) const
 {
-    // A cell (identified by its min-corner origin o) may contain the isosurface
-    // only if at least one of its eight corners is active. Corner c of cell o sits
-    // at o + cornerOffset(c), so o is a candidate iff some active voxel v satisfies
-    // o == v - cornerOffset(c).
-    //
-    // Each thread marks candidate cell origins into its own thread-local MaskGrid
-    // (no contention); these are then unioned into a master, whose active voxels —
-    // iterated in tree (Morton) order — are the candidate cells.
     using LeafNode = typename GridType::TreeType::LeafNodeType;
 
+    util::CpuTimer gt;
+
+    gt.start();
     std::vector<const LeafNode*> leaves;
     leaves.reserve(256);
     for (auto it = mGrid.tree().cbeginLeaf(); it; ++it) leaves.push_back(&*it);
+    const double msLeafCollect = gt.milliseconds();
 
     tbb::enumerable_thread_specific<MaskGrid::Ptr> pool(
         [] { return MaskGrid::create(); });
 
+    gt.start();
     tbb::parallel_for(tbb::blocked_range<size_t>(0, leaves.size()),
         [&](const tbb::blocked_range<size_t>& range)
     {
@@ -842,40 +846,50 @@ MarchingCubes<GridType>::gatherCells(std::vector<Coord>& cells) const
             }
         }
     });
+    const double msMark = gt.milliseconds();
 
+    gt.start();
     MaskGrid::Ptr master = MaskGrid::create();
-    {
-        MaskGrid::Accessor masterAcc = master->getAccessor();
-        for (const MaskGrid::Ptr& local : pool) {
-            for (auto leafIt = local->tree().cbeginLeaf(); leafIt; ++leafIt)
-                for (auto vit = leafIt->cbeginValueOn(); vit; ++vit)
-                    masterAcc.setValueOn(vit.getCoord());
-        }
-    }
+    for (const MaskGrid::Ptr& local : pool)
+        master->tree().topologyUnion(local->tree());
+    const double msUnion = gt.milliseconds();
 
-    cells.clear();
-    cells.reserve(static_cast<size_t>(master->activeVoxelCount()));
-    for (auto leafIt = master->tree().cbeginLeaf(); leafIt; ++leafIt)
-        for (auto vit = leafIt->cbeginValueOn(); vit; ++vit)
-            cells.push_back(vit.getCoord());
+    gt.start();
+    masterLeaves.clear();
+    masterLeaves.reserve(master->tree().leafCount());
+    for (auto it = master->tree().cbeginLeaf(); it; ++it)
+        masterLeaves.push_back(&*it);
+    const double msMasterCollect = gt.milliseconds();
+
+    std::cerr << "[gatherCells profile]"
+              << "  inputLeaves=" << leaves.size()
+              << "  masterLeaves=" << masterLeaves.size() << "\n"
+              << "  leafCollect(serial)  " << msLeafCollect   << " ms\n"
+              << "  mark(parallel)       " << msMark          << " ms\n"
+              << "  topologyUnion(serial)" << msUnion         << " ms\n"
+              << "  masterCollect(serial)" << msMasterCollect << " ms\n"
+              << "  total                " << (msLeafCollect+msMark+msUnion+msMasterCollect) << " ms\n";
+    return master;
 }
 
 
 template<typename GridType>
 void
-MarchingCubes<GridType>::extract(const std::vector<Coord>& cells, double isovalue)
+MarchingCubes<GridType>::extract(const std::vector<const MaskLeaf*>& masterLeaves,
+                                  double isovalue)
 {
     using AccessorT = typename GridType::ConstAccessor;
 
     const math::Transform& xform = mGrid.transform();
+    util::CpuTimer stepTimer;
 
     // ---- March candidate cells in parallel ---------------------------------
-    // Each thread accumulates a locally welded mesh fragment; vertices are welded
-    // globally in the shard merge below. Pre-size each fragment's weld table from a
-    // conservative per-thread vertex estimate to avoid repeated rehashing.
+    // Iterate master leaves directly — each leaf's active voxels are cell origins.
+    // This avoids materialising a flat Coord vector (2.5 GB at crawler scale).
+    const std::size_t nMasterLeaves = masterLeaves.size();
     const std::size_t nThreads = std::max(std::size_t(1),
         static_cast<std::size_t>(tbb::this_task_arena::max_concurrency()));
-    const std::size_t vertsPerThread = cells.size() / nThreads + 1;
+    const std::size_t vertsPerThread = nMasterLeaves * 256 / nThreads + 1;
     std::size_t initCap = 64;
     while (initCap * 2 < vertsPerThread * 3) initCap <<= 1; // load factor <= 2/3
 
@@ -887,29 +901,29 @@ MarchingCubes<GridType>::extract(const std::vector<Coord>& cells, double isovalu
     });
     tbb::enumerable_thread_specific<AccessorT> accPool(
         [&] { return mGrid.getConstAccessor(); });
-    tbb::parallel_for(tbb::blocked_range<size_t>(0, cells.size()),
+    stepTimer.start();
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, nMasterLeaves),
         [&](const tbb::blocked_range<size_t>& range)
     {
         LocalMesh& mesh = pool.local();
         AccessorT& acc  = accPool.local();
         Coord     corner[8];
         ValueType value[8];
-        for (size_t ci = range.begin(); ci != range.end(); ++ci) {
-            const Coord origin = cells[ci];
-            for (int c = 0; c < 8; ++c) {
-                corner[c] = origin + cornerOffset(c);
-                value[c]  = acc.getValue(corner[c]);
+        for (size_t li = range.begin(); li != range.end(); ++li) {
+            for (auto vit = masterLeaves[li]->cbeginValueOn(); vit; ++vit) {
+                const Coord origin = vit.getCoord();
+                for (int c = 0; c < 8; ++c) {
+                    corner[c] = origin + cornerOffset(c);
+                    value[c]  = acc.getValue(corner[c]);
+                }
+                marchCell(mesh, xform, isovalue, origin, corner, value);
             }
-            marchCell(mesh, xform, isovalue, origin, corner, value);
         }
     });
+    const double msMarch = stepTimer.milliseconds();
 
     // ---- Merge thread-local fragments (parallel shard merge) ----------------
-    // Re-weld vertices by edge key so boundary vertices shared between thread
-    // ranges collapse to one global vertex. The global key hash space is split
-    // into numShards disjoint buckets; each vertex belongs to exactly one shard, so
-    // shards dedup and index in parallel without synchronization. A two-pass
-    // parallel scatter bins vertices by shard to avoid a serial O(N) scatter.
+    stepTimer.start();
     std::vector<const LocalMesh*> frags;
     for (const LocalMesh& m : pool) frags.push_back(&m);
     const std::size_t nFrags = frags.size();
@@ -927,24 +941,30 @@ MarchingCubes<GridType>::extract(const std::vector<Coord>& cells, double isovalu
     while (numShards < nFrags) numShards <<= 1;
     const std::size_t shardMask = numShards - 1;
     const EdgeKeyHash hasher;
+    const double msFragSetup = stepTimer.milliseconds();
 
     // 1. Count per (fragment, shard).
+    stepTimer.start();
     std::vector<uint32_t> fragShardCount(nFrags * numShards, 0);
     tbb::parallel_for(std::size_t(0), nFrags, [&](std::size_t f) {
         uint32_t* cnt = fragShardCount.data() + f * numShards;
         for (const EdgeKey& key : frags[f]->keys)
             ++cnt[hasher(key) & shardMask];
     });
+    const double msCount = stepTimer.milliseconds();
 
     // 2. Prefix sum -> per-(fragment,shard) offsets into binnedIdx.
+    stepTimer.start();
     std::vector<uint32_t> fragShardOff(nFrags * numShards + 1, 0);
     for (std::size_t i = 0; i < nFrags * numShards; ++i)
         fragShardOff[i + 1] = fragShardOff[i] + fragShardCount[i];
     const uint32_t totalBinned = fragShardOff[nFrags * numShards];
+    const double msPrefixSum = stepTimer.milliseconds();
 
     std::vector<uint32_t> binnedIdx(totalBinned);
 
     // 3. Fill: scatter each fragment's local vertex indices by shard.
+    stepTimer.start();
     tbb::parallel_for(std::size_t(0), nFrags, [&](std::size_t f) {
         uint32_t* fill = fragShardCount.data() + f * numShards; // reuse as cursor
         std::fill(fill, fill + numShards, 0u);
@@ -954,8 +974,10 @@ MarchingCubes<GridType>::extract(const std::vector<Coord>& cells, double isovalu
             binnedIdx[off[s] + fill[s]++] = i;
         }
     });
+    const double msScatter = stepTimer.milliseconds();
 
     // 4. Parallel per-shard dedup.
+    stepTimer.start();
     std::vector<Index32> remap(totalFragVerts);
     std::vector<std::vector<Vec3s>> shardPts(numShards);
 
@@ -999,8 +1021,10 @@ MarchingCubes<GridType>::extract(const std::vector<Coord>& cells, double isovalu
             }
         }
     });
+    const double msDedup = stepTimer.milliseconds();
 
     // 5. Prefix sum -> global point offsets per shard.
+    stepTimer.start();
     std::vector<Index32> shardOffset(numShards + 1, 0);
     for (std::size_t s = 0; s < numShards; ++s)
         shardOffset[s + 1] = shardOffset[s] + static_cast<Index32>(shardPts[s].size());
@@ -1018,8 +1042,10 @@ MarchingCubes<GridType>::extract(const std::vector<Coord>& cells, double isovalu
                 remap[fragVertOff[f] + binnedIdx[base + bi]] += off;
         }
     });
+    const double msAssemble = stepTimer.milliseconds();
 
     // 7. Remap triangle indices (parallel over fragments).
+    stepTimer.start();
     std::vector<std::size_t> triOff(nFrags + 1, 0);
     for (std::size_t f = 0; f < nFrags; ++f)
         triOff[f + 1] = triOff[f] + frags[f]->triangles.size();
@@ -1031,6 +1057,21 @@ MarchingCubes<GridType>::extract(const std::vector<Coord>& cells, double isovalu
         for (const Vec3I& tri : frags[f]->triangles)
             *out++ = Vec3I(remap[foff + tri[0]], remap[foff + tri[1]], remap[foff + tri[2]]);
     });
+    const double msRemap = stepTimer.milliseconds();
+
+    const double msTotal = msMarch + msFragSetup + msCount + msPrefixSum
+                         + msScatter + msDedup + msAssemble + msRemap;
+    std::cerr << "[MarchingCubes extract profile]  nFrags=" << nFrags
+              << "  numShards=" << numShards << "\n"
+              << "  march(parallel)  " << msMarch     << " ms\n"
+              << "  fragSetup        " << msFragSetup  << " ms\n"
+              << "  count(parallel)  " << msCount      << " ms\n"
+              << "  prefixSum        " << msPrefixSum  << " ms\n"
+              << "  scatter(parallel)" << msScatter    << " ms\n"
+              << "  dedup(parallel)  " << msDedup      << " ms\n"
+              << "  assemble+patch   " << msAssemble   << " ms\n"
+              << "  triRemap(parallel)" << msRemap     << " ms\n"
+              << "  total            " << msTotal      << " ms\n";
 }
 
 
@@ -1041,10 +1082,21 @@ MarchingCubes<GridType>::operator()(double isovalue)
     mPoints.clear();
     mTriangles.clear();
 
-    std::vector<Coord> cells;
-    this->gatherCells(cells);
-    if (cells.empty()) return;
-    this->extract(cells, isovalue);
+    util::CpuTimer t;
+    std::vector<const MaskLeaf*> masterLeaves;
+    t.start();
+    MaskGrid::Ptr master = this->gatherCells(masterLeaves); // keep alive for extract
+    const double msGather = t.milliseconds();
+    if (masterLeaves.empty()) return;
+    t.start();
+    this->extract(masterLeaves, isovalue);
+    const double msExtract = t.milliseconds();
+    std::cerr << "[MarchingCubes profile]"
+              << "  gatherCells=" << msGather << " ms"
+              << "  extract="     << msExtract << " ms"
+              << "  masterLeaves=" << masterLeaves.size()
+              << "  pts="         << mPoints.size()
+              << "  tris="        << mTriangles.size() << "\n";
 }
 
 

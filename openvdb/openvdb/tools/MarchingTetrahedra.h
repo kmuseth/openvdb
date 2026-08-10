@@ -426,14 +426,8 @@ MarchingTetrahedra<GridType>::gatherCells(std::vector<Coord>& cells) const
 
     // Union all thread-local MaskGrids into a single master.
     MaskGrid::Ptr master = MaskGrid::create();
-    {
-        MaskGrid::Accessor masterAcc = master->getAccessor();
-        for (const MaskGrid::Ptr& local : pool) {
-            for (auto leafIt = local->tree().cbeginLeaf(); leafIt; ++leafIt)
-                for (auto vit = leafIt->cbeginValueOn(); vit; ++vit)
-                    masterAcc.setValueOn(vit.getCoord());
-        }
-    }
+    for (const MaskGrid::Ptr& local : pool)
+        master->tree().topologyUnion(local->tree());
 
     cells.clear();
     cells.reserve(static_cast<size_t>(master->activeVoxelCount()));
