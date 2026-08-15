@@ -41,4 +41,12 @@ if(NANOVDB_USE_CUDA)
   target_link_libraries(bench_accessor_cuda_old PRIVATE nanovdb)
   target_compile_definitions(bench_accessor_cuda_old PRIVATE NANOVDB_USE_OLD_ACCESSOR)
   set_target_properties(bench_accessor_cuda_old PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+
+  # KEYLESS accessor -- ReadAccessor<0,1,2> with no stored coordinate keys.
+  add_executable(bench_accessor_cuda_keyless BenchAccessorCuda.cu)
+  target_link_libraries(bench_accessor_cuda_keyless PRIVATE nanovdb)
+  target_compile_definitions(bench_accessor_cuda_keyless PRIVATE
+      NANOVDB_NO_OLD_ACCESSOR
+      NANOVDB_USE_KEYLESS_ACCESSOR)
+  set_target_properties(bench_accessor_cuda_keyless PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 endif()

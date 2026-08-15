@@ -375,6 +375,44 @@ Workstation's SM 8.9 result; `ReadAccessor<0>` is neutral on GPU (1.00×) as exp
 | Random (`<0>`) | 29.90 | 1.66 | 0.222 | 7.5× |
 | Stencil GPU (`<0>`) | — | — | 0.0845 | — |
 
+### Key-less `ReadAccessor<0,1,2>` — 32 B (no stored keys)
+
+The key-less variant (`-DNANOVDB_USE_KEYLESS_ACCESSOR`) stores **no per-level coordinate keys**;
+cache validity is checked against each node's own origin (byte offset 0) instead. This halves the
+accessor: **`sizeof ReadAccessor<0,1,2>` 72 B → 32 B** (equal to `<0>`). The two column groups below
+are from the **same run** so they are directly comparable; the `<0>` accessor (unaffected by the flag)
+served as a control and was identical across builds on GPU, confirming the deltas are real, not noise.
+
+Raw ns/access, `ReadAccessor<0,1,2>` (bold = faster of each keyed/key-less pair):
+
+| Pattern | CPU-1T keyed | CPU-1T keyless | CPU-MT keyed | CPU-MT keyless | GPU keyed | GPU keyless |
+|---|--:|--:|--:|--:|--:|--:|
+| Sequential | 1.64 | **1.24** | 0.47 | **0.45** | 0.065 | **0.045** |
+| LeafJump | **6.04** | 8.06 | **0.69** | 0.72 | **0.097** | 0.117 |
+| NodeJump | **4.34** | 6.28 | **0.69** | 0.78 | **0.109** | 0.140 |
+| Random | **35.96** | 40.58 | **1.96** | 2.00 | **0.234** | 0.309 |
+| Stencil (ns/lookup) | 1.967 | **1.541** | 0.184 | **0.142** | **0.0955** | 0.124 |
+
+keyed → key-less speedup ( >1 = key-less faster ):
+
+| Pattern | CPU-1T | CPU-MT | GPU |
+|---|--:|--:|--:|
+| Sequential | **1.32×** | 1.04× | **1.44×** |
+| LeafJump | 0.75× | 0.96× | 0.83× |
+| NodeJump | 0.69× | 0.88× | 0.78× |
+| Random | 0.89× | 0.98× | 0.76× |
+| Stencil | **1.28×** | **1.30×** | 0.77× |
+
+**Verdict: a trade-off, not a clean win.** Key-less is faster where access is cache-coherent and the
+smaller struct / cheaper origin check pays off — **Sequential (+32 % CPU-1T, +44 % GPU)** and **Stencil
+on CPU (+28 % 1T, +30 % MT)**. It is slower on the cache-miss-heavy patterns — **LeafJump, NodeJump,
+Random on both CPU and GPU** (GPU −17 % to −32 %) — because a leaf-cache miss must recompute the node
+origin to re-validate, which costs more than a stored-key compare exactly when misses are frequent.
+GPU Stencil also regresses (−23 %). Its structural benefit is the **2.25× smaller accessor** (72 B →
+32 B), most valuable for register-pressured GPU kernels doing coherent sweeps.
+*(CPU-1T is the noisiest column on this thermally-limited laptop; the GPU and CPU-MT columns are the
+reliable ones.)*
+
 ---
 
 ## Results — Workstation (AMD Ryzen Threadripper PRO 7975WX / RTX 6000 Ada, SM 8.9) — corrected benchmark
@@ -743,21 +781,25 @@ For production use with the NEW accessor, the choice of accessor type depends on
 # Configure with the benchmark (and CUDA, for the GPU variant) enabled
 cmake -S . -B build -DNANOVDB_BUILD_BENCHMARK=ON -DNANOVDB_USE_CUDA=ON
 
-# Build all four executables
+# Build all six executables
 cmake --build build --target \
-  bench_accessor_old bench_accessor_new \
-  bench_accessor_cuda_old bench_accessor_cuda_new -j
+  bench_accessor_old bench_accessor_new bench_accessor_keyless \
+  bench_accessor_cuda_old bench_accessor_cuda_new bench_accessor_cuda_keyless -j
 
 # Run — each binary prints results for both ReadAccessor<0,1,2> and ReadAccessor<0>
 cd build/nanovdb/nanovdb/benchmark
-./bench_accessor_old        # CPU, OLD accessor, both <0,1,2> and <0>
-./bench_accessor_new        # CPU, NEW accessor, both <0,1,2> and <0>
-./bench_accessor_cuda_old   # GPU, OLD accessor, both <0,1,2> and <0>
-./bench_accessor_cuda_new   # GPU, NEW accessor, both <0,1,2> and <0>
+./bench_accessor_old            # CPU, OLD accessor, both <0,1,2> and <0>
+./bench_accessor_new            # CPU, NEW accessor, both <0,1,2> and <0>
+./bench_accessor_keyless        # CPU, NEW key-less accessor (32 B <0,1,2>)
+./bench_accessor_cuda_old       # GPU, OLD accessor, both <0,1,2> and <0>
+./bench_accessor_cuda_new       # GPU, NEW accessor, both <0,1,2> and <0>
+./bench_accessor_cuda_keyless   # GPU, NEW key-less accessor (32 B <0,1,2>)
 ```
 
-The OLD vs NEW behaviour is selected at compile time per target
-(`-DNANOVDB_USE_OLD_ACCESSOR` vs `-DNANOVDB_NO_OLD_ACCESSOR`). Both accessor types
+The accessor behaviour is selected at compile time per target: OLD
+(`-DNANOVDB_USE_OLD_ACCESSOR`), NEW (`-DNANOVDB_NO_OLD_ACCESSOR`), or NEW key-less
+(`-DNANOVDB_NO_OLD_ACCESSOR -DNANOVDB_USE_KEYLESS_ACCESSOR`, which drops the stored coordinate
+keys so `ReadAccessor<0,1,2>` shrinks from 72 B to 32 B). Both accessor types
 (`ReadAccessor<0,1,2>` and `ReadAccessor<0>`) are run within each binary.
 
 ### Files
