@@ -159,7 +159,11 @@ static void runSuite(const GridT* grid, const char* accLabel, int N,
 
 int main()
 {
-    std::cout << "=== NanoVDB ReadAccessor CPU benchmark: " << bench::accessorMode() << " ===\n\n";
+    using Acc012 = nanovdb::ReadAccessor<float, 0, 1, 2>;
+    using Acc0   = nanovdb::ReadAccessor<float, 0>;
+    std::cout << "=== NanoVDB ReadAccessor CPU benchmark: " << bench::accessorMode() << " ===\n";
+    std::cout << "sizeof ReadAccessor<0,1,2>=" << sizeof(Acc012)
+              << "B  ReadAccessor<0>=" << sizeof(Acc0) << "B\n\n";
 
     // A narrow-band level set sphere: its only active voxels are the band leaves,
     // so every harvested coordinate resolves at a leaf node (a fog sphere would
@@ -188,9 +192,6 @@ int main()
     std::cout << "-------------------------------------------------------------------\n";
 
     std::vector<float> out(N);
-
-    using Acc012 = nanovdb::ReadAccessor<float, 0, 1, 2>;
-    using Acc0   = nanovdb::ReadAccessor<float, 0>;
 
     runSuite<Acc012>(grid, "<0,1,2>", N, out, pools);
     std::cout << "\n";

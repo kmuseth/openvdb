@@ -155,6 +155,13 @@
 // This replaces three levels of Coord keys in the ReadAccessor with one Coord
 //#define NANOVDB_USE_SINGLE_ACCESSOR_KEY
 
+// Eliminate all key storage in ReadAccessor<0,1,2>: cache validity is checked by
+// reading the node's own origin (first 12 bytes of every node struct) instead of
+// storing a redundant copy. Saves 36 bytes (default) / 12 bytes (single-key) and
+// reduces GPU register pressure from 17 to 8 registers. On a cache hit the origin
+// load is free -- it shares a cache line with the node data about to be read.
+//#define NANOVDB_USE_KEYLESS_ACCESSOR
+
 // Use this to switch between std::ofstream or FILE implementations
 //#define NANOVDB_USE_IOSTREAMS
 
@@ -5264,13 +5271,14 @@ class ReadAccessor<BuildT, 0, 1, 2>
     using CoordValueType = typename RootT::CoordT::ValueType;
 
     // All member data are mutable to allow for access methods to be const
-#ifdef NANOVDB_USE_SINGLE_ACCESSOR_KEY // 44 bytes total
+#if defined(NANOVDB_USE_KEYLESS_ACCESSOR) // 32 bytes total -- no key storage
+#elif defined(NANOVDB_USE_SINGLE_ACCESSOR_KEY) // 44 bytes total
     mutable CoordT mKey; // 3*4 = 12 bytes
 #else // 68 bytes total
     mutable CoordT mKeys[3]; // 3*3*4 = 36 bytes
 #endif
     mutable const RootT* mRoot;
-    mutable const void*  mNode[3]; // 4*8 = 32 bytes
+    mutable const void*  mNode[3]; // 3*8 = 24 bytes
 
 public:
     using BuildType = BuildT;
@@ -5281,12 +5289,15 @@ public:
 
     /// @brief Constructor from a root node
     __hostdev__ ReadAccessor(const RootT& root)
-#ifdef NANOVDB_USE_SINGLE_ACCESSOR_KEY
+#if defined(NANOVDB_USE_KEYLESS_ACCESSOR)
+        : mRoot(&root)
+#elif defined(NANOVDB_USE_SINGLE_ACCESSOR_KEY)
         : mKey(CoordType::max())
+        , mRoot(&root)
 #else
         : mKeys{CoordType::max(), CoordType::max(), CoordType::max()}
-#endif
         , mRoot(&root)
+#endif
         , mNode{nullptr, nullptr, nullptr}
     {
     }
@@ -5332,15 +5343,34 @@ public:
     /// @brief Reset this access to its initial state, i.e. with an empty cache
     __hostdev__ void clear()
     {
-#ifdef NANOVDB_USE_SINGLE_ACCESSOR_KEY
+#if defined(NANOVDB_USE_SINGLE_ACCESSOR_KEY)
         mKey = CoordType::max();
-#else
+#elif !defined(NANOVDB_USE_KEYLESS_ACCESSOR)
         mKeys[0] = mKeys[1] = mKeys[2] = CoordType::max();
 #endif
         mNode[0] = mNode[1] = mNode[2] = nullptr;
     }
 
-#ifdef NANOVDB_USE_SINGLE_ACCESSOR_KEY
+#if defined(NANOVDB_USE_KEYLESS_ACCESSOR)
+    /// @brief Return true if the node at the given level covers ijk.
+    /// Cache validity is determined by comparing ijk against the node's own
+    /// origin (stored at byte offset 0 of every node struct). On a miss the
+    /// stale pointer is nulled so subsequent calls skip the origin load.
+    template<typename NodeT>
+    __hostdev__ bool isCached(const CoordType& ijk) const
+    {
+        const NodeT* node = reinterpret_cast<const NodeT*>(mNode[NodeT::LEVEL]);
+        if (!node) return false;
+        // mBBoxMin (leaf) and mBBox.min() (internal) both live at byte offset 0.
+        const CoordValueType* org = reinterpret_cast<const CoordValueType*>(node);
+        if ((((ijk[0] ^ org[0]) | (ijk[1] ^ org[1]) | (ijk[2] ^ org[2]))
+             & int32_t(~NodeT::MASK)) != 0) {
+            mNode[NodeT::LEVEL] = nullptr;
+            return false;
+        }
+        return true;
+    }
+#elif defined(NANOVDB_USE_SINGLE_ACCESSOR_KEY)
     template<typename NodeT>
     __hostdev__ bool isCached(CoordValueType dirty) const
     {
@@ -5455,13 +5485,13 @@ private:
     template<typename, typename, template<uint32_t> class, uint32_t>
     friend class LeafNode;
 
-    /// @brief Inserts a leaf node and key pair into this ReadAccessor
+    /// @brief Inserts a node into this ReadAccessor's cache.
     template<typename NodeT>
     __hostdev__ void insert(const CoordType& ijk, const NodeT* node) const
     {
-#ifdef NANOVDB_USE_SINGLE_ACCESSOR_KEY
+#if defined(NANOVDB_USE_SINGLE_ACCESSOR_KEY)
         mKey = ijk;
-#else
+#elif !defined(NANOVDB_USE_KEYLESS_ACCESSOR)
         mKeys[NodeT::LEVEL] = ijk & ~NodeT::MASK;
 #endif
         mNode[NodeT::LEVEL] = node;

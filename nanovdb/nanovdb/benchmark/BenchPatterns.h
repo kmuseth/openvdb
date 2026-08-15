@@ -168,9 +168,13 @@ inline std::vector<nanovdb::Coord> makeStencilCenters(const Pools& pools, const 
 inline const char* accessorMode()
 {
 #ifdef NANOVDB_USE_OLD_ACCESSOR
-    return "OLD (NANOVDB_USE_OLD_ACCESSOR defined)";
+    return "OLD (NANOVDB_USE_OLD_ACCESSOR)";
+#elif defined(NANOVDB_USE_KEYLESS_ACCESSOR)
+    return "KEYLESS (NANOVDB_USE_KEYLESS_ACCESSOR)";
+#elif defined(NANOVDB_USE_SINGLE_ACCESSOR_KEY)
+    return "SINGLE-KEY (NANOVDB_USE_SINGLE_ACCESSOR_KEY)";
 #else
-    return "NEW (NANOVDB_USE_OLD_ACCESSOR not defined)";
+    return "NEW default (multi-key)";
 #endif
 }
 

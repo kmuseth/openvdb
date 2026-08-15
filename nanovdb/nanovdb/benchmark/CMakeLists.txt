@@ -21,6 +21,14 @@ add_executable(bench_accessor_old BenchAccessor.cc)
 target_link_libraries(bench_accessor_old PRIVATE nanovdb)
 target_compile_definitions(bench_accessor_old PRIVATE NANOVDB_USE_OLD_ACCESSOR)
 
+# KEYLESS accessor -- ReadAccessor<0,1,2> with no stored coordinate keys;
+# cache validity is checked against the node's own origin at byte offset 0.
+add_executable(bench_accessor_keyless BenchAccessor.cc)
+target_link_libraries(bench_accessor_keyless PRIVATE nanovdb)
+target_compile_definitions(bench_accessor_keyless PRIVATE
+    NANOVDB_NO_OLD_ACCESSOR
+    NANOVDB_USE_KEYLESS_ACCESSOR)
+
 # --- GPU benchmark -----------------------------------------------------------
 
 if(NANOVDB_USE_CUDA)
