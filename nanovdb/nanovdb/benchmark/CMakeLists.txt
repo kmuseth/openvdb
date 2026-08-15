@@ -29,6 +29,15 @@ target_compile_definitions(bench_accessor_keyless PRIVATE
     NANOVDB_NO_OLD_ACCESSOR
     NANOVDB_USE_KEYLESS_ACCESSOR)
 
+# SINGLE-KEY accessor -- ReadAccessor<0,1,2> with one shared CoordT key (44 B)
+# instead of three separate CoordT keys (68 B).  Cache validity is tested via a
+# single XOR-dirty value computed once per getValue call and masked per level.
+add_executable(bench_accessor_singlekey BenchAccessor.cc)
+target_link_libraries(bench_accessor_singlekey PRIVATE nanovdb)
+target_compile_definitions(bench_accessor_singlekey PRIVATE
+    NANOVDB_NO_OLD_ACCESSOR
+    NANOVDB_USE_SINGLE_ACCESSOR_KEY)
+
 # --- GPU benchmark -----------------------------------------------------------
 
 if(NANOVDB_USE_CUDA)
@@ -49,4 +58,12 @@ if(NANOVDB_USE_CUDA)
       NANOVDB_NO_OLD_ACCESSOR
       NANOVDB_USE_KEYLESS_ACCESSOR)
   set_target_properties(bench_accessor_cuda_keyless PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+
+  # SINGLE-KEY accessor -- ReadAccessor<0,1,2> with one shared CoordT key (44 B).
+  add_executable(bench_accessor_cuda_singlekey BenchAccessorCuda.cu)
+  target_link_libraries(bench_accessor_cuda_singlekey PRIVATE nanovdb)
+  target_compile_definitions(bench_accessor_cuda_singlekey PRIVATE
+      NANOVDB_NO_OLD_ACCESSOR
+      NANOVDB_USE_SINGLE_ACCESSOR_KEY)
+  set_target_properties(bench_accessor_cuda_singlekey PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 endif()

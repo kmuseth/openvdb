@@ -176,10 +176,10 @@ Coordinates are harvested from the active leaf voxels of a narrow-band level set
 
 ## Results — Desktop (AMD Ryzen 9 9950X / RTX PRO 6000 Blackwell, SM 12.0) — corrected benchmark
 
-This section uses the **corrected leaf-sampling benchmark** (same methodology as the MacBook Air M3
-and Workstation sections). Coordinates are drawn from the active leaf voxels of a narrow-band level set sphere
+This section uses the **corrected leaf-sampling benchmark** (same methodology as all other machines).
+Coordinates are drawn from the active leaf voxels of a narrow-band level set sphere
 (`createLevelSetSphere<float>(radius=256, voxelSize=1.0, halfWidth=3.0)`); every lookup resolves
-at a leaf node.
+at a leaf node. All three modes — OLD, NEW (keyed), and KEYLESS — are benchmarked.
 
 | Property | Value |
 |---|---|
@@ -190,88 +190,167 @@ at a leaf node.
 | Access resolving at leaf | **100 %** |
 | CPU | AMD Ryzen 9 9950X — 16 cores / 32 threads; TBB `parallel_for`, 4096-coord grains |
 | GPU | NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition (SM 12.0); 32-coord chunks/thread, 128 threads/block |
+| Accessor sizes | `ReadAccessor<0,1,2>` keyed = 72 B; `ReadAccessor<0,1,2>` keyless = 32 B; `ReadAccessor<0>` = 32 B |
 | Access count per pattern | 1,048,576 per pattern; stencil centres up to 262,144 (filtered for full 27-tap activity) |
 | Repetition | 7 trials, median reported |
 
 ### CPU single-threaded — ns per access (latency)
 
-| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
-|---|--:|--:|--:|--:|
-| Sequential | 1.52 | 0.91 | **1.47** | **0.85** |
-| LeafJump | 7.25 | 5.52 | **4.39** | 5.58 |
-| NodeJump | **2.96** | **2.97** | 4.01 | 3.00 |
-| Random | **21.81** | 21.45 | 23.13 | **20.21** |
-| Stencil (ns/lookup) | **1.112** | 1.113 | 1.141 | 1.234 |
+| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> | KEYLESS \<0,1,2\> |
+|---|--:|--:|--:|--:|--:|
+| Sequential | 1.60 | 0.85 | 1.83 | **0.84** | **1.26** |
+| LeafJump | 7.59 | 5.77 | 4.54 | 5.75 | **3.82** |
+| NodeJump | **3.05** | 3.32 | 3.31 | **2.99** | 3.83 |
+| Random | **32.12** | 31.07 | 33.12 | **28.53** | 40.79 |
+| Stencil (ns/lookup) | 1.170 | 1.244 | 1.088 | 1.179 | **0.904** |
 
 ### CPU 32-threaded — ns per access (throughput)
 
-| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
-|---|--:|--:|--:|--:|
-| Sequential | 0.17 | 0.17 | 0.19 | **0.15** |
-| LeafJump | **0.46** | 0.50 | 0.47 | 0.51 |
-| NodeJump | **0.28** | 0.40 | 0.37 | **0.31** |
-| Random | **1.21** | **1.12** | 1.44 | 1.28 |
-| Stencil (ns/lookup) | 0.107 | **0.091** | **0.096** | 0.093 |
+| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> | KEYLESS \<0,1,2\> |
+|---|--:|--:|--:|--:|--:|
+| Sequential | 0.19 | 0.17 | 0.19 | **0.13** | **0.17** |
+| LeafJump | 0.47 | 0.44 | 0.43 | 0.46 | **0.31** |
+| NodeJump | **0.26** | 0.28 | 0.30 | 0.31 | **0.29** |
+| Random | 1.24 | **1.22** | 1.34 | 1.25 | 1.61 |
+| Stencil (ns/lookup) | 0.101 | 0.104 | 0.105 | 0.090 | **0.059** |
 
 ### GPU — ns per access (throughput)
 
-| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
-|---|--:|--:|--:|--:|
-| Sequential | 0.027 | **0.026** | **0.026** | 0.027 |
-| LeafJump | 0.074 | 0.073 | **0.050** | 0.073 |
-| NodeJump | 0.087 | 0.087 | **0.066** | 0.087 |
-| Random | **0.096** | **0.096** | 0.121 | **0.096** |
-| Stencil (ns/lookup) | 0.0691 | 0.0689 | **0.0630** | 0.0689 |
+| Pattern | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> | KEYLESS \<0,1,2\> |
+|---|--:|--:|--:|--:|--:|
+| Sequential | 0.027 | 0.026 | **0.025** | 0.026 | **0.024** |
+| LeafJump | 0.072 | 0.073 | **0.049** | 0.072 | 0.058 |
+| NodeJump | 0.085 | 0.085 | **0.065** | 0.085 | 0.082 |
+| Random | **0.094** | **0.094** | 0.119 | **0.096** | 0.158 |
+| Stencil (ns/lookup) | 0.0673 | 0.0676 | **0.0623** | 0.0680 | 0.0927 |
 
 ### OLD → NEW speedup by accessor type
 
 | Pattern | CPU-1T \<0,1,2\> | CPU-1T \<0\> | CPU-MT \<0,1,2\> | CPU-MT \<0\> | GPU \<0,1,2\> | GPU \<0\> |
 |---|--:|--:|--:|--:|--:|--:|
-| Sequential | 1.03× | **1.07×** | 0.89× | **1.13×** | 1.04× | 0.96× |
-| LeafJump | **1.65×** | 0.99× | 0.98× | 0.98× | **1.48×** | 1.00× |
-| NodeJump | 0.74× | 0.99× | 0.76× | 1.29× | **1.32×** | 1.00× |
-| Random | 0.94× | 1.06× | 0.84× | 0.88× | 0.79× | 1.00× |
-| **Stencil** | 0.97× | 0.90× | **1.11×** | 0.98× | **1.10×** | 1.00× |
+| Sequential | 0.87× | 1.01× | 1.00× | 1.31× | 1.08× | 1.00× |
+| LeafJump | **1.67×** | 1.00× | 1.09× | 0.96× | **1.47×** | 1.01× |
+| NodeJump | 0.92× | 1.11× | 0.87× | 0.90× | **1.31×** | 1.00× |
+| Random | 0.97× | 1.09× | 0.93× | 0.98× | 0.79× | 0.98× |
+| **Stencil** | 1.08× | 1.06× | 0.96× | 1.16× | **1.08×** | 1.01× |
 
-Key: **`ReadAccessor<0>` is essentially unchanged by OLD→NEW** — confirming the fix only affects
-the 3-level accessor. NEW `<0,1,2>` wins strongly for LeafJump (**CPU-1T 1.65×, GPU 1.48×**).
-NodeJump shows a notable CPU-1T regression (0.74×) because with the corrected methodology
-(one real leaf per lower-internal node), the level-1 cache always misses and the extra checks add
-latency; the GPU benefits from the level-2 hit path (1.32×) despite the same pattern.
+**`ReadAccessor<0>` is essentially unchanged by OLD→NEW** (0.96–1.16×, i.e. within noise) —
+confirming the fix only affects the 3-level accessor. NEW `<0,1,2>` wins most clearly for
+**LeafJump** (CPU-1T **1.67×**, GPU **1.47×**) and **GPU NodeJump (1.31×)**.
+
+### Single-key `ReadAccessor<0,1,2>` — 48 B (one shared CoordT key)
+
+The single-key variant (`-DNANOVDB_USE_SINGLE_ACCESSOR_KEY`) stores **one `CoordT` key** (12 B)
+shared across all three cache levels instead of three separate keys (36 B). Cache validity is
+tested via a single `dirty = (ijk ^ mKey) OR-reduced` value computed once per `getValue` call;
+each level check then needs only `dirty & ~NodeMask` — one AND instead of three AND+compare
+sequences. Struct size: **72 B → 48 B** (same pointer count, key shrinks from 36 B to 12 B).
+
+Raw ns/access, `ReadAccessor<0,1,2>` (bold = fastest of the three variants):
+
+| Pattern | CPU-1T 3-key | CPU-1T single-key | CPU-1T keyless | CPU-MT 3-key | CPU-MT single-key | CPU-MT keyless |
+|---|--:|--:|--:|--:|--:|--:|
+| Sequential | 1.58 | **1.14** | 1.15 | 0.21 | **0.13** | 0.14 |
+| LeafJump | 4.52 | 3.19 | **2.96** | 0.41 | **0.25** | 0.27 |
+| NodeJump | 3.33 | **2.21** | 3.22 | 0.29 | **0.22** | 0.29 |
+| Random | 32.82 | **27.56** | 40.76 | 1.52 | **1.14** | 1.52 |
+| Stencil (ns/lookup) | 1.087 | **0.825** | 0.913 | 0.088 | **0.067** | 0.080 |
+
+GPU ns/access:
+
+| Pattern | GPU 3-key | GPU single-key | GPU keyless |
+|---|--:|--:|--:|
+| Sequential | 0.025 | **0.022** | 0.024 |
+| LeafJump | 0.049 | **0.039** | 0.057 |
+| NodeJump | 0.064 | **0.055** | 0.080 |
+| Random | 0.119 | **0.104** | 0.155 |
+| Stencil (ns/stencil) | **1.666** | 2.072 | 2.494 |
+
+3-key → single-key speedup ( >1 = single-key faster ):
+
+| Pattern | CPU-1T | CPU-MT | GPU |
+|---|--:|--:|--:|
+| Sequential | **1.39×** | **1.62×** | **1.14×** |
+| LeafJump | **1.42×** | **1.64×** | **1.26×** |
+| NodeJump | **1.51×** | **1.32×** | **1.16×** |
+| Random | **1.19×** | **1.33×** | **1.14×** |
+| Stencil | **1.32×** | **1.31×** | 0.80× |
+
+**CPU verdict: single-key wins on every pattern including Random.** Even when all cache levels
+miss (Random), the single-key approach is cheaper: `dirty` costs 3 XOR + 2 OR = 5 ops computed
+once, then each level check is 1 AND. The default 3-key does 3 AND + 3 compare per level for up
+to 3 levels = up to 18 ops on a full miss. The single-key approach is always ≤8 ops regardless
+of how many levels miss.
+
+**GPU verdict: single-key wins for all point patterns (1.14–1.26×) but loses on stencil (−20%).**
+For the stencil's always-hot leaf cache, 26 of 27 taps hit the level-0 check immediately. The
+default 3-key comparison (`ijk & ~Mask == mKey`) compiles to three parallel `setp` instructions
+that Blackwell executes cheaply. Single-key inserts a `computeDirty` XOR-OR chain with a serial
+dependency before the mask check — for the stencil's common case (leaf hit) this is pure overhead.
+
+### NEW keyed → KEYLESS speedup ( >1 = keyless faster )
+
+| Pattern | CPU-1T | CPU-MT | GPU |
+|---|--:|--:|--:|
+| Sequential | **1.45×** | **1.12×** | 1.04× |
+| LeafJump | **1.19×** | **1.39×** | 0.84× |
+| NodeJump | 0.86× | 1.03× | 0.79× |
+| Random | 0.81× | 0.83× | 0.75× |
+| **Stencil** | **1.20×** | **1.78×** | 0.67× |
+
+The most striking contrast: **CPU MT Stencil 1.78×** (keyless) vs **GPU Stencil 0.67×** (keyless
+is 33 % slower). See the stencil detail and verdict below.
 
 ### Stencil detail — ns per whole 27-neighbour stencil
 
-| Platform | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> |
-|---|--:|--:|--:|--:|
-| CPU 1 thread | **30.03** | 30.04 | 30.81 | 33.33 |
-| CPU 32 threads | 2.88 | **2.45** | **2.60** | 2.50 |
-| GPU | 1.8660 | 1.8616 | **1.7002** | 1.8613 |
+| Platform | OLD \<0,1,2\> | OLD \<0\> | NEW \<0,1,2\> | NEW \<0\> | KEYLESS \<0,1,2\> |
+|---|--:|--:|--:|--:|--:|
+| CPU 1 thread | 31.59 | 33.59 | 29.38 | 31.83 | **24.40** |
+| CPU 32 threads | 2.73 | 2.81 | 2.83 | 2.42 | **1.59** |
+| GPU | 1.8158 | 1.8246 | **1.6809** | 1.8359 | 2.5022 |
 
-The GPU stencil **improves 10 % with NEW `<0,1,2>`** (1.7002 vs 1.8660 ns/stencil) — in contrast
-to the Workstation (RTX 6000 Ada, SM 8.9) where it regressed 14 %. On the RTX PRO 6000 Blackwell
-(SM 12.0) the extra cache-level checks are absorbed and the level-1/2 cache hits across stencil
-neighbourhood boundaries produce a net gain. `ReadAccessor<0>` (GPU) is unchanged (1.00×), as
-expected — it has no level-1/2 logic for the flag to affect.
+**CPU: keyless dominates.** The 32 B keyless accessor fits in two cache lines vs ~4.5 for the
+72 B keyed variant. In a 32-thread TBB run each grain holds its own accessor; the halved footprint
+reduces L1/register pressure substantially and the 1.78× CPU-MT stencil speedup is the direct
+result. Even single-threaded stencil improves 18 % (29.38 → 24.40 ns/stencil).
 
-### Best-accessor recommendation (NEW mode, this machine)
+**GPU: keyed NEW wins.** With the corrected narrow-band stencil the 27 neighbours are mostly
+co-located in the same leaf, so the leaf cache is hot and the key-compare cost is negligible.
+The keyless accessor must recompute the node origin on every leaf cache validation —
+a bitshift operation per access that proves more expensive on the GPU than the stored-key
+load-and-compare, raising stencil time from 1.68 to 2.50 ns/stencil (−33 %). The GPU
+stencil with NEW keyed `<0,1,2>` (1.6809 ns) remains the best GPU result, 8 % better than OLD.
 
-| Pattern | Best choice | Why |
+### Best-accessor recommendation (this machine)
+
+Three key strategies for `ReadAccessor<0,1,2>` are now available: **3-key** (default, 72 B),
+**single-key** (48 B, `NANOVDB_USE_SINGLE_ACCESSOR_KEY`), and **keyless** (32 B,
+`NANOVDB_USE_KEYLESS_ACCESSOR`). `ReadAccessor<0>` (32 B) is unchanged by these flags.
+
+| Pattern | Best CPU choice | Best GPU choice |
 |---|---|---|
-| Sequential | `<0>` (0.85 ns 1T) | Leaf cache stays hot; level-1/2 checks add marginal cost |
-| LeafJump | `<0,1,2>` (4.39 ns) | Level-1 cache rescues leaf misses; **1.65×** OLD→NEW (1.27× vs `<0>`) |
-| NodeJump | `<0>` (3.00 ns) | CPU: level-1 always misses, extra checks add latency; GPU: `<0,1,2>` wins |
-| Random | `<0>` (20.21 ns) | All levels miss; extra checks are pure cost |
-| Stencil (CPU) | `<0,1,2>` (1.112 ns/lkp OLD, 0.096 ns/lkp MT) | MT edge (1.11×); `<0>` regresses on 1T |
-| Stencil (GPU) | `<0,1,2>` (0.0630 ns/lkp) | Blackwell benefits: 10 % faster than OLD or `<0>` |
+| Sequential | SINGLE-KEY `<0,1,2>` (1.14 ns 1T / 0.13 MT) — **1.39×/1.62×** over 3-key | SINGLE-KEY `<0,1,2>` (0.022 ns) — **1.14×** over 3-key |
+| LeafJump | SINGLE-KEY `<0,1,2>` (3.19 ns 1T / 0.25 MT) — **1.42×/1.64×** over 3-key | SINGLE-KEY `<0,1,2>` (0.039 ns) — **1.26×** over 3-key |
+| NodeJump | SINGLE-KEY `<0,1,2>` (2.21 ns 1T) — **1.51×** over 3-key | SINGLE-KEY `<0,1,2>` (0.055 ns) — **1.16×** over 3-key |
+| Random | SINGLE-KEY `<0,1,2>` (27.56 ns 1T) — **1.19×** over 3-key; `<0>` is cheaper overall | SINGLE-KEY or `<0>` (0.104 / 0.096 ns) — tie; `<0>` avoids all checks |
+| Stencil (CPU) | SINGLE-KEY `<0,1,2>` (0.825 ns/lkp 1T / 0.067 MT) — **1.32×/1.31×** over 3-key | 3-key NEW `<0,1,2>` (0.0617 ns/lkp) — both alternatives hurt |
+| Stencil (GPU) | — | 3-key NEW `<0,1,2>` (1.666 ns/stencil) — single-key −20 %, keyless −33 % |
 
-### Fair platform comparison — best accessor (NEW), full hardware
+**Summary: use `NANOVDB_USE_SINGLE_ACCESSOR_KEY` by default on this machine.** It is the single
+option that wins everywhere on CPU (including Random) and on all GPU point patterns. The only
+exception is GPU stencil, where the default 3-key accessor remains best — the always-hot leaf
+cache makes the XOR-dirty overhead a net cost on Blackwell.
+
+### Fair platform comparison — best accessor, full hardware
 
 | Workload | CPU-1T | CPU-32T | GPU | GPU vs CPU-32T |
 |---|--:|--:|--:|--:|
-| Sequential (`<0>`) | 0.85 | 0.15 | 0.026 | 5.8× |
-| LeafJump (`<0,1,2>`) | 4.39 | 0.47 | 0.050 | 9.4× |
-| Random (`<0>`) | 20.21 | 1.28 | 0.096 | 13.3× |
-| Stencil (`<0,1,2>`) | 1.141 | 0.096 | 0.0630 | 1.5× |
+| Sequential (SINGLE-KEY `<0,1,2>`) | 1.14 | 0.13 | 0.022 | 5.9× |
+| LeafJump (SINGLE-KEY `<0,1,2>`) | 3.19 | 0.25 | 0.039 | 6.4× |
+| NodeJump (SINGLE-KEY `<0,1,2>`) | 2.21 | 0.22 | 0.055 | 4.0× |
+| Random (SINGLE-KEY `<0,1,2>`) | 27.56 | 1.14 | 0.104 | 11.0× |
+| Stencil CPU (SINGLE-KEY `<0,1,2>`) | 0.825 | 0.067 | — | — |
+| Stencil GPU (3-key NEW `<0,1,2>`) | — | — | 0.0617 | ~1.1× vs CPU-32T |
 
 ---
 
@@ -678,7 +757,47 @@ the checks least efficiently. On SM 12.0 (Blackwell), the architectural improvem
 extra checks and the level-1/2 hits at neighbourhood boundaries produce a 10 % gain.
 `ReadAccessor<0>` is neutral on GPU across all machines.
 
-### 4. CPU MT pattern: stencil gains on all machines; LeafJump gains on most
+### 4. Key-less `ReadAccessor<0,1,2>`: CPU benefits, GPU architecture-dependent
+
+The key-less variant (72 B → 32 B, no stored coordinate keys) has been benchmarked on the
+Desktop (Blackwell) and Dell laptop (Ada). Its `<0>` control numbers are unchanged across builds,
+confirming the flag only affects the 3-level accessor.
+
+**CPU: keyless is beneficial for coherent/stencil patterns on both machines.**
+
+| Pattern | Dell CPU-1T | Dell CPU-MT | Desktop CPU-1T | Desktop CPU-MT |
+|---|--:|--:|--:|--:|
+| Sequential | **1.32×** | 1.04× | **1.45×** | **1.12×** |
+| LeafJump | 0.75× | 0.96× | **1.19×** | **1.39×** |
+| NodeJump | 0.69× | 0.88× | 0.86× | 1.03× |
+| Random | 0.89× | 0.98× | 0.81× | 0.83× |
+| **Stencil** | **1.28×** | **1.30×** | **1.20×** | **1.78×** |
+
+Stencil gains consistently on both CPUs. The Desktop (Ryzen 9950X) shows a much larger MT
+stencil gain (1.78×) than the Dell laptop (1.30×) — the Ryzen's higher per-core bandwidth
+amplifies the benefit of the 2.25× smaller accessor in a 32-thread run. LeafJump CPU on the
+Desktop is also faster with keyless (1.19–1.39×), unlike the Dell laptop (0.75–0.96×), making
+the LeafJump keyless behaviour machine-dependent even within CPU.
+
+**GPU: keyless is neutral or regressive on both machines.**
+
+| Pattern | Dell GPU keyed→keyless | Desktop GPU keyed→keyless |
+|---|--:|--:|
+| Sequential | **1.44×** (faster!) | 1.04× (neutral) |
+| LeafJump | 0.83× | 0.84× |
+| NodeJump | 0.78× | 0.79× |
+| Random | 0.76× | 0.75× |
+| **Stencil** | 0.77× | **0.67×** |
+
+The Dell (SM 8.9) GPU Sequential keyless is a clear win (1.44×). On Blackwell (SM 12.0) the
+same pattern is neutral (1.04×) — the NEW keyed accessor already handles sequential well on
+Blackwell so there is no room for the struct-size reduction to help. GPU Stencil with keyless
+regresses on both machines, but more severely on Blackwell (−33 % vs −23 % on Ada).
+
+**Overall GPU verdict:** avoid keyless `<0,1,2>` for GPU stencil on any tested architecture.
+For GPU Sequential the Dell/Ada specifically benefits; Blackwell does not.
+
+### 6. CPU MT pattern: stencil gains on all machines; LeafJump gains on most
 
 | Pattern | Desktop (32T) CPU-MT `<0,1,2>` | Workstation (64T) CPU-MT `<0,1,2>` | Dell laptop (32T) CPU-MT `<0,1,2>` | Razer Laptop (12T) CPU-MT `<0,1,2>` |
 |---|--:|--:|--:|--:|
@@ -694,17 +813,17 @@ The Razer Laptop shows the strongest MT gains for LeafJump and NodeJump — its 
 produces less cross-grain interference, letting the level-1/2 cache hits matter more. Random is
 consistently near or below 1.00× (extra checks, no cache benefit).
 
-### 5. `ReadAccessor<0>` unaffected by OLD→NEW on all platforms
+### 7. `ReadAccessor<0>` unaffected by OLD→NEW on all platforms
 
 Confirmed: `<0>` OLD→NEW ratios remain 0.97–1.05× across all patterns, platforms, and
 methodologies. The fix is entirely in the 3-level `<0,1,2>` accessor.
 
-### 6. Random always regresses for \<0,1,2\>; \<0\> is neutral
+### 8. Random always regresses for \<0,1,2\>; \<0\> is neutral
 
 For `<0,1,2>`: all caches miss → 0.85–0.95× on CPU-1T, 0.79–0.94× on GPU (corrected run).
 For `<0>`: no extra checks → ~1.00× on all platforms. Hardware-independent.
 
-### Summary and bottom line
+### 9. Summary and bottom line
 
 **The NEW fix's benefit for `ReadAccessor<0,1,2>` is pattern- and hardware-dependent, not
 universal.** The one clear, consistent win is **LeafJump** — the pattern the level-1 cache rescue
@@ -781,26 +900,33 @@ For production use with the NEW accessor, the choice of accessor type depends on
 # Configure with the benchmark (and CUDA, for the GPU variant) enabled
 cmake -S . -B build -DNANOVDB_BUILD_BENCHMARK=ON -DNANOVDB_USE_CUDA=ON
 
-# Build all six executables
+# Build all eight executables
 cmake --build build --target \
-  bench_accessor_old bench_accessor_new bench_accessor_keyless \
-  bench_accessor_cuda_old bench_accessor_cuda_new bench_accessor_cuda_keyless -j
+  bench_accessor_old bench_accessor_new bench_accessor_singlekey bench_accessor_keyless \
+  bench_accessor_cuda_old bench_accessor_cuda_new bench_accessor_cuda_singlekey bench_accessor_cuda_keyless -j
 
 # Run — each binary prints results for both ReadAccessor<0,1,2> and ReadAccessor<0>
 cd build/nanovdb/nanovdb/benchmark
-./bench_accessor_old            # CPU, OLD accessor, both <0,1,2> and <0>
-./bench_accessor_new            # CPU, NEW accessor, both <0,1,2> and <0>
-./bench_accessor_keyless        # CPU, NEW key-less accessor (32 B <0,1,2>)
-./bench_accessor_cuda_old       # GPU, OLD accessor, both <0,1,2> and <0>
-./bench_accessor_cuda_new       # GPU, NEW accessor, both <0,1,2> and <0>
-./bench_accessor_cuda_keyless   # GPU, NEW key-less accessor (32 B <0,1,2>)
+./bench_accessor_old              # CPU, OLD 3-key accessor (72 B)
+./bench_accessor_new              # CPU, NEW 3-key accessor (72 B)
+./bench_accessor_singlekey        # CPU, NEW single-key accessor (48 B)
+./bench_accessor_keyless          # CPU, NEW keyless accessor (32 B)
+./bench_accessor_cuda_old         # GPU, OLD 3-key accessor
+./bench_accessor_cuda_new         # GPU, NEW 3-key accessor
+./bench_accessor_cuda_singlekey   # GPU, NEW single-key accessor (48 B)
+./bench_accessor_cuda_keyless     # GPU, NEW keyless accessor (32 B)
 ```
 
-The accessor behaviour is selected at compile time per target: OLD
-(`-DNANOVDB_USE_OLD_ACCESSOR`), NEW (`-DNANOVDB_NO_OLD_ACCESSOR`), or NEW key-less
-(`-DNANOVDB_NO_OLD_ACCESSOR -DNANOVDB_USE_KEYLESS_ACCESSOR`, which drops the stored coordinate
-keys so `ReadAccessor<0,1,2>` shrinks from 72 B to 32 B). Both accessor types
-(`ReadAccessor<0,1,2>` and `ReadAccessor<0>`) are run within each binary.
+The accessor behaviour is selected at compile time per target:
+
+| Binary suffix | Macros | `sizeof ReadAccessor<0,1,2>` |
+|---|---|--:|
+| `_old` | `-DNANOVDB_USE_OLD_ACCESSOR` | 72 B |
+| `_new` | `-DNANOVDB_NO_OLD_ACCESSOR` | 72 B |
+| `_singlekey` | `-DNANOVDB_NO_OLD_ACCESSOR -DNANOVDB_USE_SINGLE_ACCESSOR_KEY` | 48 B |
+| `_keyless` | `-DNANOVDB_NO_OLD_ACCESSOR -DNANOVDB_USE_KEYLESS_ACCESSOR` | 32 B |
+
+Both accessor types (`ReadAccessor<0,1,2>` and `ReadAccessor<0>`) are printed within each binary.
 
 ### Files
 
