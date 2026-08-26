@@ -150,6 +150,11 @@ public:
     ///        std::cerr and calls std::exit(EXIT_FAILURE) rather than propagating.
     void run();
 
+    /// @brief Statically check the parsed pipeline for syntax errors and exit, without
+    ///        executing any action. Invoked by run() when "-lint" was given.
+    /// @note  This is a syntax check only; see the implementation for what it cannot cover.
+    void lint();
+
     /// @brief Redirect std::clog/std::cerr/std::cout to a log file for the remainder of this Tool's lifetime.
     /// @param logFile Path of the log file. If empty, a timestamped name is generated.
     /// @param append  If true, append to the existing file; otherwise truncate it (default).
@@ -207,6 +212,7 @@ private:
     std::list<GridBase::Ptr> mGrid;           ///< Stack of VDB grids owned by this tool (back = top).
     Parser                   mParser;         ///< Command-line action parser and processor.
     bool                     mErrorOnWarning; ///< If true, warning() escalates to a fatal error.
+    bool                     mLintOnly;       ///< If true, run() statically checks the pipeline instead of executing it.
     std::ofstream            mLogFile;        ///< Backing file used by startLog/endLog when active.
     std::streambuf          *mOldClogBuffer;  ///< Cached std::clog buffer for restoring after logging.
     std::streambuf          *mOldCerrBuffer;  ///< Cached std::cerr buffer for restoring after logging.
@@ -441,6 +447,7 @@ Tool::Tool(int argc, char *argv[])
                {"space", "5", "1|2|3|5", "default spatial discretization order"},
                {"keep", "false", "1|0|true|false", "by default delete the input"}})
     , mErrorOnWarning(false)
+    , mLintOnly(false)
     , mLogFile()
     , mOldClogBuffer(nullptr)
     , mOldCerrBuffer(nullptr)
@@ -541,6 +548,7 @@ auto Tool::getGeom(size_t age) const
 
 void Tool::run()
 {
+    if (mLintOnly) return this->lint();// checks syntax and exits; never runs an action
     if (mParser.verbose>1) this->print_args();
     try {
         mParser.run();
@@ -549,6 +557,89 @@ void Tool::run()
         std::exit(EXIT_FAILURE);
     }
 }// Tool::run
+
+// ==============================================================================================================
+
+void Tool::lint()
+{
+    // Static, pre-execution check of the whole pipeline.
+    //
+    // Reaching this function already means a great deal passed: Parser::parse() has
+    // rejected unknown actions and misspelled option names (both with "did you mean"
+    // suggestions), and Parser::finalize() has rejected unbalanced control-flow
+    // scopes. Any -config file was loaded during parsing too, so its actions are in
+    // the list below and get checked like any other.
+    //
+    // What is added here is compiling the expression-valued options, which the
+    // actions themselves only compile when they execute -- so without this a typo in
+    // the kernel of the twentieth action is not reported until the first nineteen
+    // have run.
+    //
+    // Two things are deliberately out of scope, and the summary says so rather than
+    // implying a clean bill of health:
+    //   * Any value containing "{...}", which is substituted from Processor memory
+    //     (and loop variables) at run time, so its final text does not exist yet.
+    //   * Everything that depends on pipeline state: whether a "vdb" age is in range,
+    //     whether a named grid exists, whether a grid has the required type or class,
+    //     or whether a kernel's variables were populated by an earlier -eval.
+    // This is a syntax check, not a promise that the pipeline will run.
+    //
+    // Problems are accumulated rather than thrown, so one invocation reports every
+    // syntax error instead of the fix-one-typo-rerun-repeat loop a throw would give.
+
+    // Options holding a Calculator expression. This deliberately excludes:
+    //   * -switch "on" and -case "key", which are selector VALUES compared verbatim
+    //     against each other; an arbitrary string such as "level set" is legal there
+    //     and must not be reported just because it is not a valid expression.
+    //   * -ax "code", which is OpenVDB AX -- a different language, parsed by
+    //     openvdb_ax rather than by Calculator.
+    auto expressionOption = [](const std::string &action) -> const char* {
+        if (action == "calc") return "kernel";
+        if (action == "forAllValues" || action == "forOnValues" || action == "forOffValues") return "kernel";
+        if (action == "if") return "test";
+        return nullptr;
+    };
+
+    VecS problems;
+    size_t checked = 0, skipped = 0;
+    for (const auto &action : mParser.actions) {
+        const char *optName = expressionOption(action.names[0]);
+        if (optName == nullptr) continue;
+        const Option *expr = nullptr, *file = nullptr;
+        for (const auto &opt : action.options) {
+            if (opt.name == optName)   expr = &opt;
+            else if (opt.name == "file") file = &opt;
+        }
+        if (expr == nullptr || expr->value.empty()) continue;
+        // "file=" takes precedence over the inline option, and the file it names may
+        // legitimately not exist yet, so there is nothing to check in that case.
+        if (file != nullptr && !file->value.empty()) { ++skipped; continue; }
+        if (expr->value.find('{') != std::string::npos) { ++skipped; continue; }// run-time substitution
+        ++checked;
+        try {
+            Calculator().compile(expr->value);
+        } catch (const std::exception &e) {
+            problems.push_back("-" + action.names[0] + " " + optName + "=\"" + expr->value + "\": " + e.what());
+        }
+    }
+
+    auto plural = [](size_t n, const char *word) {
+        return std::to_string(n) + " " + word + (n == 1 ? "" : "s");
+    };
+    if (problems.empty()) {
+        std::clog << "lint: no syntax errors in " << plural(mParser.actions.size(), "action")
+                  << " (" << plural(checked, "expression") << " compiled";
+        if (skipped) std::clog << ", " << plural(skipped, "expression") << " deferred to run time";
+        std::clog << ").\nlint: this checks syntax only -- it cannot verify stack ages, grid names,"
+                     " grid types, or variables set by earlier actions.\n";
+        return;
+    }
+    // Report every problem, then throw. main() turns the exception into a non-zero
+    // exit status, so "-lint" can gate a script or CI job, and throwing rather than
+    // calling std::exit() keeps this reachable from the unit tests.
+    for (const std::string &p : problems) std::clog << "lint: " << p << "\n";
+    throw std::runtime_error("lint: " + plural(problems.size(), "problem") + " found");
+}// Tool::lint
 
 // ==============================================================================================================
 
@@ -1211,6 +1302,10 @@ void Tool::init()
   mParser.addAction(
       {"errorOnWarning", "stopOnWarning"}, "stop on warnings, i.e. treat warnings as errors", {},
       [&](){mErrorOnWarning = true;}, [](){});
+
+  mParser.addAction(
+      {"lint", "dryrun"}, "check the pipeline for syntax errors and exit without running any action. Reports every problem found rather than stopping at the first, and exits with a non-zero status if there are any, so it can gate a script or CI job. Implies -quiet. Note this is a SYNTAX check: it cannot verify anything that depends on pipeline state, such as whether a \"vdb\" age is in range, whether a named grid exists, or whether a kernel's variables were set by an earlier action, and it skips any option value containing a \"{...}\" expression since that text is only substituted at run time.", {},
+      [&](){mLintOnly = true; mParser.verbose = 0;}, [](){});
 
   mParser.addAction(
       {"log"}, "enable logging to file",

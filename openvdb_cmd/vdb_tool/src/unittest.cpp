@@ -3831,6 +3831,118 @@ TEST_F(Test_vdb_tool, ActionHistogram)
     }
 }// ActionHistogram
 
+TEST_F(Test_vdb_tool, ActionLint)
+{
+    // -lint statically checks the parsed pipeline and returns without running any
+    // action. It compiles the expression-valued options, which the actions
+    // themselves only compile when they execute, so a typo in a late kernel is
+    // reported immediately instead of after everything before it has run.
+    using namespace openvdb::vdb_tool;
+
+    // Captures std::clog while running cmd, and reports whether lint threw (which is
+    // what main() turns into a non-zero exit status). Needed because the throw would
+    // otherwise discard the captured problem list.
+    auto runLint = [](const std::string& cmd, bool& threw) {
+        const auto tmp = tokenize(cmd, " ");
+        std::vector<std::unique_ptr<char[]>> owned;
+        std::vector<char*> args;
+        for (const auto& s : tmp) {
+            owned.emplace_back(new char[s.size()+1]);
+            std::strcpy(owned.back().get(), s.c_str());
+            args.push_back(owned.back().get());
+        }
+        std::ostringstream oss;
+        auto *old = std::clog.rdbuf(oss.rdbuf());
+        threw = false;
+        try {
+            Tool tool(int(args.size()), args.data());
+            tool.run();
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        std::clog.rdbuf(old);
+        return oss.str();
+    };
+
+    bool threw = false;
+
+    // A clean pipeline passes, and the summary states what was and was not checked.
+    {
+      const std::string out = runLint("vdb_tool -lint -sphere r=1 dim=8"
+                                      " -forOnValues sin(v)+1 -ls2mesh", threw);
+      EXPECT_FALSE(threw);
+      EXPECT_NE(out.find("no syntax errors"), std::string::npos);
+      EXPECT_NE(out.find("1 expression compiled"), std::string::npos);
+      EXPECT_NE(out.find("checks syntax only"), std::string::npos);
+    }
+
+    // A malformed kernel is reported and lint fails, WITHOUT executing anything --
+    // note dim=512 would be slow to actually build.
+    {
+      const std::string out = runLint("vdb_tool -lint -sphere r=1 dim=512"
+                                      " -forOnValues min(1) -ls2mesh", threw);
+      EXPECT_TRUE(threw);
+      EXPECT_NE(out.find("-forOnValues kernel=\"min(1)\""), std::string::npos);
+      EXPECT_NE(out.find("stack underflow"), std::string::npos);
+    }
+
+    // Every problem is reported in one pass, not just the first.
+    {
+      const std::string out = runLint("vdb_tool -lint -sphere -forOnValues 1:+ -calc a=", threw);
+      EXPECT_TRUE(threw);
+      EXPECT_NE(out.find("-forOnValues"), std::string::npos);
+      EXPECT_NE(out.find("-calc"), std::string::npos);
+    }
+
+    // No false positives: -if accepts bare literals, and -switch/-case take selector
+    // VALUES compared verbatim, which need not be valid Calculator expressions.
+    {
+      const std::string out = runLint("vdb_tool -lint -sphere -if true -end"
+                                      " -switch on=level_set -case key=default -end -end", threw);
+      EXPECT_FALSE(threw);
+      EXPECT_NE(out.find("no syntax errors"), std::string::npos);
+    }
+
+    // Values containing a {...} expression are substituted from memory at run time,
+    // so they are deferred rather than guessed at.
+    {
+      const std::string out = runLint("vdb_tool -lint -eval {2:@a} -sphere"
+                                      " -forOnValues {$a}*v", threw);
+      EXPECT_FALSE(threw);
+      EXPECT_NE(out.find("deferred to run time"), std::string::npos);
+      EXPECT_NE(out.find("0 expressions compiled"), std::string::npos);
+    }
+
+    // "file=" takes precedence over an inline kernel and may name a file that does
+    // not exist yet, so the inline value must not be reported.
+    {
+      const std::string out = runLint("vdb_tool -lint -sphere -calc not(valid file=prog.txt", threw);
+      EXPECT_FALSE(threw);
+      EXPECT_NE(out.find("deferred to run time"), std::string::npos);
+    }
+
+    // Actions loaded from a config file are checked too, since -config is processed
+    // during parsing, and linting must not execute the pipeline's -write.
+    {
+      const std::string cfg = "data/lint_cfg.txt";
+      const std::string outFile = "data/lint_should_not_exist.vdb";
+      std::remove(cfg.c_str());
+      std::remove(outFile.c_str());
+      {
+        std::ofstream f(cfg);
+        f << "vdb_tool " << Tool::version() << "\n";
+        f << "sphere r=1 dim=8\n";
+        f << "forOnValues min(1)\n";
+        f << "write " << outFile << "\n";
+      }
+      const std::string out = runLint("vdb_tool -lint -config " + cfg, threw);
+      EXPECT_TRUE(threw);
+      EXPECT_NE(out.find("min(1)"), std::string::npos);
+      EXPECT_FALSE(fileExists(outFile));// nothing was executed
+      std::remove(cfg.c_str());
+    }
+}// ActionLint
+
 int main(int argc, char** argv)
 {
     ::testing::InitGoogleTest(&argc, argv);

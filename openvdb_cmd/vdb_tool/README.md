@@ -47,6 +47,7 @@ The vdb_tool is a versatile yet lightweight command-line utility that chains tog
 | **intersection** | CSG intersection of two level sets surfaces |
 | **iso2ls** (aliases: lsRebuild, i2l) | Convert an iso-surface of a scalar field into a level set (i.e. SDF) |
 | **length** | generate a scalar grid with the magnitude of a vector grid |
+| **lint** (alias: dryrun) | check the pipeline for syntax errors and exit without running any action. Reports every problem found rather than stopping at the first, and exits with a non-zero status if there are any, so it can gate a script or CI job. Implies -quiet. Note this is a SYNTAX check: it cannot verify anything that depends on pipeline state, such as whether a "vdb" age is in range, whether a named grid exists, or whether a kernel's variables were set by an earlier action, and it skips any option value containing a "{...}" expression since that text is only substituted at run time. |
 | **log** | enable logging to file |
 | **ls2fog** (aliases: l2f, sdf2fog) | Convert a level set VDB into a VDB with a fog volume, i.e. normalized density. |
 | **ls2mesh** (alias: sdf2mesh) | Convert a level set to an adaptive polygon mesh |
