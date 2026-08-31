@@ -1,0 +1,4 @@
+tools:
+
+  Fixes:
+  - Fixed an index error in "mesh_to_volume_internal::checkNeighbours()" in MeshToVolume.h where the i+1,j,k-1 neighbour reused the i+1,j,k offset, silently missing that neighbour's value during self-intersection checks in mesh-to-volume conversion (bugfix contributed by hexuejun). A regression test covering all 26 neighbour offsets was added to TestMeshToVolume.cc.
