@@ -17,6 +17,9 @@
 #include <iostream>
 #include <vector>
 
+#undef NDEBUG        // Release defines NDEBUG, which would compile out the assert below
+#include <cassert>
+
 static constexpr int CHUNK = 32;
 
 template<typename AccT>
@@ -32,8 +35,12 @@ __global__ void benchKernel(const nanovdb::NanoGrid<float>* grid,
     AccT  acc(grid->tree().root());
     float sum = 0.0f;
     const int end = min(base + CHUNK, count);
-    for (int i = base; i < end; ++i)
+    for (int i = base; i < end; ++i) {
+        // Probe via the root, bypassing the accessor, so cache state cannot influence it.
+        assert(grid->tree().root().probeLeaf(coords[i]) == nullptr &&
+               "Unexpected: Leaf node found at probed location");
         sum += acc.getValue(coords[i]);
+    }
     out[tid] = sum;
 }
 
@@ -54,8 +61,13 @@ __global__ void stencilKernel(const nanovdb::NanoGrid<float>* grid,
         float s = 0.0f;
         for (int dz = -1; dz <= 1; ++dz)
             for (int dy = -1; dy <= 1; ++dy)
-                for (int dx = -1; dx <= 1; ++dx)
-                    s += acc.getValue(c + nanovdb::Coord(dx, dy, dz));
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const nanovdb::Coord n = c + nanovdb::Coord(dx, dy, dz);
+                    // Probe via the root, bypassing the accessor, so cache state cannot influence it.
+                    assert(grid->tree().root().probeLeaf(n) == nullptr &&
+                           "Unexpected: Leaf node found at probed location");
+                    s += acc.getValue(n);
+                }
         out[i] = s;
     }
 }
